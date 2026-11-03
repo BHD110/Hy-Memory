@@ -6,9 +6,26 @@ HY Memory SDK - pytest 配置
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
+
+
+# Windows 的 CRT 默认只给进程 512 个 fd。整个测试套件会创建大量 sqlite / chroma
+# 连接，句柄配额耗尽后所有新开文件的操作都会报 "Too many open files"（Linux 上
+# 默认 1024+ 所以没暴露）。CRT 上限最高可提到 8192，进程级、幂等、无副作用。
+# Python 3.12 与 faiss 的 fopen 走的都是 ucrtbase.dll 的 fd 表。
+if sys.platform == "win32":
+    try:
+        import ctypes
+        for _crt in ("ucrtbase", "msvcrt"):
+            try:
+                ctypes.CDLL(_crt)._setmaxstdio(8192)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # 加载 .env 文件（如果存在，向上逐级查找）

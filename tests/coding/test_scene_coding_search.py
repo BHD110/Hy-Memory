@@ -82,6 +82,20 @@ def chain_dir():
         yield d
 
 
+@pytest.fixture(autouse=True)
+def _close_bound_chain(search_ctx, chain_dir):
+    """测试把 HyCodeMem 挂到 ctx 上跑, 结束后要先关库再删临时目录 —— Windows 上
+    打开的 sqlite 连接会锁住 hy_code.db。依赖 chain_dir 保证本 fixture 先 teardown。"""
+    yield
+    st = getattr(search_ctx, "_chain_store", None)
+    if st is not None:
+        try:
+            st.close()
+        except Exception:
+            pass
+    search_ctx._chain_store = None
+
+
 @pytest.mark.asyncio
 class TestSearchCodingVariantEndToEnd:
     """真调 HyMemoryClient._search_coding，变体走两条路各验一次。"""

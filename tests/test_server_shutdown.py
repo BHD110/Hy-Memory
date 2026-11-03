@@ -8,6 +8,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pytest
+
 from hy_memory.server import _request_shutdown
 
 
@@ -35,6 +37,12 @@ def test_request_shutdown_returns_promptly():
         server.server_close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="signal.SIGALRM/signal.alarm are POSIX-only; Windows shutdown is "
+    "covered by test_request_shutdown_returns_promptly (SIGINT arrives as "
+    "KeyboardInterrupt there)",
+)
 def test_signal_handler_does_not_deadlock_the_serving_thread():
     """A signal handler calling shutdown() directly hangs forever.
 

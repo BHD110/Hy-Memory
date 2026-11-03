@@ -1121,6 +1121,13 @@ class HyMemoryClient:
                 _os.path.dirname(_os.path.abspath(self._config.coding.db_path)),
                 "hy_code_chain",
             )
+            # 换实例前先关掉旧的 sqlite 连接 —— Windows 上打开的连接会一直锁着
+            # hy_code.db, 只靠 GC 回收会让旧库文件删不掉/备份不了。
+            if self._chain_store is not None:
+                try:
+                    self._chain_store.close()
+                except Exception:
+                    pass
             self._chain_store = HyCodeMem(
                 _dir, repo_root=self._chain_repo_root, owner=owner)
             logger.info("[coding] chain store initialized at %s (owner=%r)",

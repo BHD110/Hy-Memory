@@ -52,6 +52,7 @@ class ChromaVectorStore(VectorStoreBase):
         self._client = None
         self._collection = None
         self._entity_collection = None  # lazy: {collection}_entities
+        self._chroma_ref_delta = 0  # initialize() 时登记的引用计数增量
 
     async def initialize(self) -> None:
         """初始化 Chroma 客户端，确保集合存在"""
@@ -68,6 +69,15 @@ class ChromaVectorStore(VectorStoreBase):
         def _init():
             import chromadb
 
+            # chromadb 会在进程级注册表里给每个 identifier 记引用计数（一个
+            # PersistentClient 可能加不止一次）。这里把"本次创建新增了多少"记下来，
+            # close() 时原样扣减 —— Windows 上扣不干净会把数据目录一直锁住。
+            try:
+                from chromadb.api.shared_system_client import SharedSystemClient
+                _refcount_before = dict(SharedSystemClient._identifier_to_refcount)
+            except Exception:
+                _refcount_before = None
+
             # 优先使用远程连接
             if vs_config.host:
                 client = chromadb.HttpClient(
@@ -79,15 +89,29 @@ class ChromaVectorStore(VectorStoreBase):
                     path=vs_config.persist_directory,
                 )
 
+            _ref_delta = 1
+            if _refcount_before is not None:
+                try:
+                    _ident = getattr(client, "_identifier", None)
+                    if _ident:
+                        _ref_delta = max(
+                            1,
+                            SharedSystemClient._identifier_to_refcount.get(_ident, 0)
+                            - _refcount_before.get(_ident, 0),
+                        )
+                except Exception:
+                    _ref_delta = 1
+
             # 获取或创建集合
             # Chroma 内部管理向量维度，首次 add 时自动推断
             collection = client.get_or_create_collection(
                 name=self._collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
-            return client, collection
+            return client, collection, _ref_delta
 
-        self._client, self._collection = await _run_in_vdb_pool(_init)
+        (self._client, self._collection,
+         self._chroma_ref_delta) = await _run_in_vdb_pool(_init)
         logger.debug(f"VectorStore initialized (Chroma), collection={self._collection_name}")
 
     # ================================================================
@@ -560,10 +584,42 @@ class ChromaVectorStore(VectorStoreBase):
 
     async def close(self) -> None:
         """关闭客户端"""
-        # Chroma PersistentClient 无需显式关闭
+        self._release_chroma_system()
         self._client = None
         self._collection = None
         self._entity_collection = None
+
+    def _release_chroma_system(self) -> None:
+        """释放 chroma 进程级 System 注册表里的实例。
+
+        PersistentClient 会在 SharedSystemClient 的类级注册表里登记 System 并持有
+        sqlite / 段存储句柄，close() 只丢引用的话这些句柄永远不关 —— Linux 上只是
+        资源浪费，Windows 上会把数据目录锁死，close 之后连删除/备份都不行。
+        按 initialize() 时登记的增量扣减引用计数，归零时停掉并移除注册表项；
+        还有别的实例在用（计数>0）则不动。
+        """
+        client = getattr(self, "_client", None)
+        identifier = getattr(client, "_identifier", None)
+        ref_delta = getattr(self, "_chroma_ref_delta", 0)
+        self._client = None
+        self._collection = None
+        self._entity_collection = None
+        self._chroma_ref_delta = 0
+        if not identifier or ref_delta <= 0:
+            return
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+            count = 0
+            for _ in range(ref_delta):
+                count = SharedSystemClient._decrement_refcount(identifier)
+                if count <= 0:
+                    break
+            if count <= 0:
+                system = SharedSystemClient._identifier_to_system.pop(identifier, None)
+                if system is not None:
+                    system.stop()
+        except Exception as e:
+            logger.debug(f"[vector-store] chroma system release skipped: {e}")
 
     async def list_by_episode(
         self,

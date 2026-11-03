@@ -176,7 +176,10 @@ class TestPromptContent:
 @pytest.fixture
 def chain():
     with tempfile.TemporaryDirectory() as d:
-        yield HyCodeMem(os.path.join(d, "chain"))
+        h = HyCodeMem(os.path.join(d, "chain"))
+        yield h
+        # Windows 上打开着的 sqlite 连接会锁住库文件, 临时目录删不掉
+        h.close()
 
 
 class TestChainText:
@@ -223,6 +226,7 @@ class TestChainObserve:
             )
             assert n >= 1
             assert H.stats()["threads"] == 1
+            H.close()
 
     def test_multiple_versions_land_on_one_thread(self, chain):
         # ★ 这层存在的理由: 同一处代码被改了几版, 每版的原话 + 真实 patch 都留着。
@@ -481,6 +485,8 @@ class TestChainOwnerIsolation:
             blkB, _ = HB.decorate([dict(self._FACT[0])], instruction="q")
             assert "x = 2" in blkA and "y = 2" not in blkA, "A 读到了 B 的 diff"
             assert "y = 2" in blkB and "x = 2" not in blkB, "B 读到了 A 的 diff"
+            HA.close()
+            HB.close()
 
     def test_empty_owner_is_not_a_public_pool(self):
         # 空 owner 只匹配空 owner，否则旧的空 owner 数据会错误读取所有新写入。
@@ -493,6 +499,8 @@ class TestChainOwnerIsolation:
             H0 = HyCodeMem(p)      # owner=''
             blk, used = H0.decorate([dict(self._FACT[0])], instruction="q")
             assert blk == "" and used == []
+            H1.close()
+            H0.close()
 
     def test_stats_scoped_to_owner_by_default(self):
         with tempfile.TemporaryDirectory() as d:
@@ -502,10 +510,12 @@ class TestChainOwnerIsolation:
                 H.observe(HyMemoryClient._chain_text(
                     self._edit(f"On branch feat/q4, {o}", f"{var} = 1\n", f"{var} = 2\n")),
                     meta={"branch": "feat/q4"})
+                H.close()
             H = HyCodeMem(p, owner="u1|r1")
             # 默认只数自己的 —— 灌库自检靠这个数, 报全库会整体偏大
             assert H.stats()["threads"] == 1
             assert H.stats(all_owners=True)["threads"] == 2
+            H.close()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -529,7 +539,10 @@ class TestEditFailureGate:
             _FakeMsg("user", "On branch feat/q4, 改 mult"),
             _FakeMsg("tool", self._EDIT + "\n" + tail, tool_name="bash"),
         ])
-        return H.observe(t, meta={"branch": "feat/q4"})
+        try:
+            return H.observe(t, meta={"branch": "feat/q4"})
+        finally:
+            H.close()
 
     @pytest.mark.parametrize("tail,tag", [
         ("Traceback (most recent call last):\n  File \"<stdin>\"\nAssertionError", "as"),

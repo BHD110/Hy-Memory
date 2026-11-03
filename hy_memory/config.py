@@ -33,6 +33,9 @@ def _load_dotenv():
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
+            # 与 python-dotenv 对齐：剥掉整段包裹的成对引号（JSON 值常因此解析失败）
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
             # 不覆盖已存在的环境变量
             if key and key not in os.environ:
                 os.environ[key] = value

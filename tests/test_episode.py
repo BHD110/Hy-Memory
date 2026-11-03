@@ -8,6 +8,7 @@ Episode 是 SDK 内部按写入时间间隔切出的"一次讨论"（可跨多�
 """
 
 import asyncio
+import sys
 import tempfile
 from datetime import datetime, timedelta
 
@@ -712,6 +713,7 @@ class TestInstrumentation:
         assert all(r["gap"] == 1800.0 for r in logged)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="time.tzset() is POSIX-only")
 def test_series_memory_at_round_trips_local_wall_clock(monkeypatch):
     """Series timestamps must not shift by the machine's UTC offset."""
     import time as _time

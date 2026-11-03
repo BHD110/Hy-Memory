@@ -34,3 +34,6 @@ agent_open_dataset/
 marvis_eval_data/
 open_agent_data.zip
 few_show_mem0.txt
+
+# 本地嵌入模型权重（数百 MB，不入库）
+models/

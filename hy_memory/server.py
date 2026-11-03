@@ -123,6 +123,19 @@ class MemoryHTTPHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/")
         try:
+            # 本地控制台（视觉复刻 MemHub R6 shell）。同源页面直接调 /api/v1/*，
+            # 不需要额外的 CORS 授权。
+            if path in ("", "/ui"):
+                from .server_ui import INDEX_HTML
+                body = INDEX_HTML.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             if path == "/healthz":
                 _json_response(self, 200, {"status": "ok"})
                 return
@@ -154,6 +167,21 @@ class MemoryHTTPHandler(BaseHTTPRequestHandler):
                 client = _get_client()
                 result = client.get_metrics(minutes=minutes)
                 _json_response(self, 200, result)
+                return
+
+            # GET /api/v1/config —— 运行时配置（脱敏），?probe=1 时附带连通性探测
+            if path == "/api/v1/config":
+                _json_response(self, 200, self._build_config(probe="?probe=1" in self.path))
+                return
+
+            # GET /api/v1/stats?user_id=... —— 记忆库聚合统计
+            if path == "/api/v1/stats":
+                user_id = ""
+                if "?" in self.path:
+                    from urllib.parse import parse_qs, urlparse
+                    qs = parse_qs(urlparse(self.path).query)
+                    user_id = (qs.get("user_id") or [""])[0]
+                _json_response(self, 200, self._build_stats(user_id))
                 return
 
             # GET /api/v1/memories/:id
@@ -192,6 +220,10 @@ class MemoryHTTPHandler(BaseHTTPRequestHandler):
 
             if path == "/api/v1/search":
                 self._handle_search(body)
+                return
+
+            if path == "/api/v1/ask":
+                self._handle_ask(body)
                 return
 
             if path == "/api/v1/user_profile":
@@ -484,6 +516,127 @@ class MemoryHTTPHandler(BaseHTTPRequestHandler):
         result = client.list_memories(**kwargs)
         _json_response(self, 200, result)
 
+    def _handle_ask(self, body: Dict):
+        """POST /api/v1/ask —— 基于记忆的问答（检索 + LLM 生成，带引用）。"""
+        question = str(body.get("query") or body.get("question") or "").strip()
+        if not question:
+            _json_response(self, 400, {"error": "query is required"})
+            return
+        user_id = str(body.get("user_id") or "").strip() or "user_1"
+        limit = max(1, min(int(body.get("limit") or 8), 20))
+
+        client = _get_client()
+        result = client.search(question, user_ids=[user_id], limit=limit)
+        mems = (result.get("memories") or {}).get("normal") or []
+
+        memories_block = "\n".join(
+            f"[{i+1}] {m.get('content', '')}"
+            for i, m in enumerate(mems)
+            if m.get("content")
+        ) or "（无相关记忆）"
+
+        prompt = (
+            "你是用户的长期记忆助手。下面是从记忆库检索到的相关记忆，"
+            "请依据它们回答用户的问题；记忆里没有的信息就直说没有记录，"
+            "不要编造。回答用中文，简洁自然，需要时引用编号如 [1]。\n\n"
+            f"# 相关记忆\n{memories_block}\n\n# 用户的问题\n{question}"
+        )
+
+        from .agent.llm_provider import LLMProvider
+        provider = LLMProvider(client._config)
+        resp = client._loop_thread.run(
+            provider.complete(prompt, max_tokens=800)
+        )
+        _json_response(self, 200, {
+            "answer": getattr(resp, "content", "") or "",
+            "citations": [
+                {
+                    "memory_id": m.get("memory_id"),
+                    "content": m.get("content"),
+                    "score": m.get("score"),
+                    "layer": m.get("layer"),
+                    "agent_id": m.get("agent_id"),
+                }
+                for m in mems
+            ],
+            "model": client._config.llm.model,
+        })
+
+    def _build_stats(self, user_id: str) -> Dict:
+        """GET /api/v1/stats —— 记忆库聚合：总数 / 按层 / 按来源 / 按状态。"""
+        client = _get_client()
+        kwargs = {"limit": 5000}
+        if user_id:
+            kwargs["user_id"] = user_id
+        result = client.list_memories(**kwargs)
+        items = (result.get("vdb") or {}).get("memories") or []
+
+        by_layer: Dict[str, int] = {}
+        by_agent: Dict[str, int] = {}
+        by_status: Dict[str, int] = {}
+        last_write = 0.0
+        for it in items:
+            layer = str(it.get("layer") or "unknown")
+            agent = str(it.get("agent_id") or "unknown")
+            status = str(it.get("status") or "unknown")
+            by_layer[layer] = by_layer.get(layer, 0) + 1
+            by_agent[agent] = by_agent.get(agent, 0) + 1
+            by_status[status] = by_status.get(status, 0) + 1
+            ts = it.get("gmt_created") or it.get("memory_at") or 0
+            try:
+                last_write = max(last_write, float(ts))
+            except (TypeError, ValueError):
+                pass
+        return {
+            "total": len(items),
+            "by_layer": by_layer,
+            "by_agent": by_agent,
+            "by_status": by_status,
+            "last_write": last_write or None,
+            "elapsed_ms": result.get("elapsed_ms") if isinstance(result, dict) else None,
+        }
+
+    def _build_config(self, probe: bool = False) -> Dict:
+        """GET /api/v1/config —— 脱敏运行时配置；probe 时附带 LLM/Embedder 连通性。"""
+        client = _get_client()
+        cfg = client._config
+        out = {
+            "llm": {
+                "model": cfg.llm.model,
+                "base_url": cfg.llm.base_url,
+                "timeout": getattr(cfg.llm, "timeout", None),
+                "key_set": bool(getattr(cfg.llm, "api_key", None)),
+            },
+            "embedder": {
+                "model": cfg.embedder.model if hasattr(cfg, "embedder") else None,
+                "base_url": cfg.embedder.base_url if hasattr(cfg, "embedder") else None,
+                "dims": getattr(getattr(cfg, "embedder", None), "embedding_dims", None),
+                "key_set": bool(getattr(getattr(cfg, "embedder", None), "api_key", None)),
+            },
+            "mode": os.getenv("MEMORY_MODE", "pro"),
+            "vector_store": getattr(cfg.vector_store, "provider", "chroma"),
+            "data_dir": os.getenv("MEMORY_DATA_DIR") or os.path.expanduser("~/.hy_memory"),
+        }
+        if not probe:
+            return out
+
+        probes = {}
+        try:
+            vec = client._loop_thread.run(
+                client._embed_service.embed("probe"))
+            probes["embedder"] = {"ok": len(vec) > 0, "dims": len(vec)}
+        except Exception as e:
+            probes["embedder"] = {"ok": False, "error": str(e)[:200]}
+        try:
+            from .agent.llm_provider import LLMProvider
+            resp = client._loop_thread.run(
+                LLMProvider(cfg).complete("回复 ok", max_tokens=256))
+            probes["llm"] = {"ok": bool(getattr(resp, "content", ""))}
+        except Exception as e:
+            probes["llm"] = {"ok": False, "error": str(e)[:200]}
+        out["probes"] = probes
+        return out
+
     def _handle_delete_all(self, body: Dict):
         """POST /api/v1/delete_all"""
         client = _get_client()
@@ -532,6 +685,17 @@ def run_server(port: int = 19527, host: str = "127.0.0.1"):
     server.daemon_threads = True  # Threads die with main process
     logger.info(f"[server] Listening on http://{host}:{port}")
     logger.info(f"[server] Health check: http://{host}:{port}/healthz")
+
+    # MCP 端点（streamable HTTP，默认 127.0.0.1:19528/mcp）随 REST 一起常驻，
+    # Codex / Qoder / Workbuddy 等宿主只需要填一个 URL。失败不影响 REST。
+    try:
+        from .mcp_server import MCP_PORT, start_http_thread
+        if start_http_thread():
+            logger.info(f"[server] MCP endpoint: http://127.0.0.1:{MCP_PORT}/mcp")
+        else:
+            logger.info("[server] MCP disabled (pip install mcp to enable)")
+    except Exception as e:
+        logger.warning(f"[server] MCP endpoint failed to start: {e}")
 
     # Graceful shutdown. The signal handler only asks a helper thread to stop
     # the loop; cleanup runs after serve_forever() returns so it cannot race
