@@ -27,6 +27,7 @@ HOSTS = frozenset(
         "workbuddy",
         "opencode",
         "qwen-code",
+        "qoder",
         "hermes",
         "pi",
         "deepseek-harness",

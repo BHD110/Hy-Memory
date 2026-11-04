@@ -12,6 +12,25 @@ afterEach(async () => {
   );
 });
 
+it("offers Qoder CN with the settings.json and skill Qoder actually reads", async () => {
+  const root = path.join(tmpdir(), `recall-hosts-qoder-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  const qoderDir = path.join(root, ".qoder-cn");
+  await mkdir(qoderDir, { recursive: true });
+
+  const qoder = (await recallHosts(root, {})).find(
+    (host) => host.hostId === "qoder",
+  );
+
+  expect(qoder?.label).toBe("Qoder CN");
+  expect(qoder?.presencePath).toBe(qoderDir);
+  expect(qoder?.layout.configPath).toBe(path.join(qoderDir, "settings.json"));
+  expect(qoder?.layout.skillPath).toBe(
+    path.join(qoderDir, "skills", "memhub-recall", "SKILL.md"),
+  );
+  expect(qoder?.layout.channel).toBe("mcp");
+});
+
 it("gives every DeepSeek Harness profile a matching unique layout identity", async () => {
   const root = path.join(tmpdir(), `recall-hosts-${process.pid}-${Date.now()}`);
   roots.push(root);

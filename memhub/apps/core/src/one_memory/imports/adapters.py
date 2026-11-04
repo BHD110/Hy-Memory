@@ -13,6 +13,9 @@ class StorageKind(StrEnum):
     ZSTD = "zstd"
     HOOK = "hook"
     API = "api"
+    #: Host-authored memory files (Markdown), read as settled memory content
+    #: rather than as a conversation to extract from.
+    MARKDOWN = "markdown"
 
 
 class ScanIssueCode(StrEnum):

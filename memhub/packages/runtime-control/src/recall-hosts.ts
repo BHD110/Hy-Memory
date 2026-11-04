@@ -10,6 +10,7 @@ import {
   openclawLayout,
   opencodeLayout,
   piLayout,
+  qoderLayout,
   qwenCodeLayout,
   type RecallHostLayout,
   workbuddyLayout,
@@ -47,6 +48,9 @@ export async function recallHosts(
   const claudeDir = path.join(home, ".claude");
   const codexDir = path.join(home, ".codex");
   const workbuddyDir = path.join(home, ".workbuddy");
+  // Qoder CN keeps app, MCP, skills, hooks and its memory files under one
+  // directory; the international build uses `.qoder` and is not this target.
+  const qoderDir = path.join(home, ".qoder-cn");
   // OpenCode splits config from data: the config lives under XDG, so its
   // presence is what says the host is set up here.
   const opencodeDir = path.join(home, ".config", "opencode");
@@ -91,6 +95,12 @@ export async function recallHosts(
       label: "WorkBuddy",
       layout: workbuddyLayout(workbuddyDir),
       presencePath: workbuddyDir,
+    },
+    {
+      hostId: "qoder",
+      label: "Qoder CN",
+      layout: qoderLayout(qoderDir),
+      presencePath: qoderDir,
     },
     {
       hostId: "opencode",

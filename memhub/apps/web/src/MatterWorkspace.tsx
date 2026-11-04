@@ -79,6 +79,7 @@ const sources: Record<string, string> = {
   codex: "Codex",
   workbuddy: "WorkBuddy",
   "claude-code": "Claude Code",
+  qoder: "Qoder CN",
   "one-memory-manual": "手动添加",
 };
 const runErrors: Record<string, string> = {

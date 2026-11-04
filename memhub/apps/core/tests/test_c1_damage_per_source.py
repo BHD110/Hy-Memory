@@ -61,7 +61,13 @@ class Source:
 
 def _jsonl_sources() -> list[str]:
     catalog = build_source_catalog(home=Path.home(), environment={})
-    return sorted(source for source in catalog if source not in PAUSED | {"hermes", "opencode"})
+    # Qoder is left out: its documented transcript path is
+    # projects/<project>/<uuid>.jsonl, not the synthetic rollout-* layout
+    # below. Its import, cursor and edit behaviour is covered in
+    # test_secondary_source_adapters.
+    return sorted(
+        source for source in catalog if source not in PAUSED | {"hermes", "opencode", "qoder"}
+    )
 
 
 def _good_record(source: str, index: int) -> dict:

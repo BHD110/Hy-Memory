@@ -36,6 +36,7 @@ from one_memory.imports.sources.parsing import (
     unwrap_host_envelope,
 )
 from one_memory.imports.sources.pi import _is_automated_session
+from one_memory.imports.sources.qoder_cn import parse_qoder_record
 from one_memory.imports.sources.workbuddy import _is_scheduled_automation, parse_workbuddy_record
 from one_memory.imports.storage import EvidenceStore
 
@@ -52,6 +53,7 @@ CAPTURE_SOURCES = frozenset(
         "deepseek-harness",
         "opencode",
         "openclaw",
+        "qoder",
     }
 )
 _UNKNOWN_USER = frozenset({"hermes", "opencode", "openclaw"})
@@ -71,6 +73,9 @@ _FILE_FALLBACK = {
     "workbuddy": parse_workbuddy_record,
     "claude-code": parse_claude_code_record,
     "codex": parse_codex_record,
+    # Qoder writes the same type/message/uuid/timestamp transcript Claude Code
+    # does, so the Stop hook can read the turn out of `transcript_path`.
+    "qoder": parse_qoder_record,
 }
 _FALLBACK_EVENTS = frozenset({"Stop", "stop", "SubagentStop", "StopFailure"})
 _TEXT_BLOCKS = frozenset({"text"})
@@ -115,6 +120,15 @@ def capture_hook(source_id: str, payload: object, database: Path) -> bool:
         return False
     if source_id == "pi" and _is_automated_session(first_string(payload.get("cwd"))):
         return False
+    # Qoder's Stop payload carries the transcript; reading it captures the
+    # whole visible turn and dedupes against the prompt hook. The message field
+    # is only a fallback for a transcript that is gone or outside the grant.
+    if (
+        source_id == "qoder"
+        and payload.get("hook_event_name") in _FALLBACK_EVENTS
+        and _capture_transcript(source_id, payload, database)
+    ):
+        return True
     lines = _messages(source_id, payload)
     if lines:
         conversation_id = _conversation(payload)

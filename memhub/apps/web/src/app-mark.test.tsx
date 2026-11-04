@@ -11,6 +11,7 @@ describe("AppMark", () => {
     ["cursor", "cursor"],
     ["claude-code", "claude"],
     ["codex", "codex"],
+    ["qoder", "qoder"],
     ["opencode", "opencode"],
     ["hermes", "hermes"],
     ["pi", "pi"],

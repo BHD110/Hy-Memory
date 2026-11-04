@@ -148,6 +148,10 @@ def _jsonl_path(root: Path, source: str) -> Path:
         return root / "chats" / f"{'0' * 32}.jsonl"
     if source == "deepseek-harness":
         return root / "attribution" / "session.jsonl"
+    if source == "qoder":
+        # Qoder's documented transcript path is projects/<project>/<uuid>.jsonl;
+        # the shared rollout-* layout is not a file it would ever read.
+        return root / "projects" / "project" / "a1b2c3d4-0000-4000-8000-000000000001.jsonl"
     return root / "project" / "rollout-attribution.jsonl"
 
 
@@ -226,6 +230,10 @@ def test_a_machine_written_user_turn_is_never_attributed_to_a_person(tmp_path, s
             marker = {"isSidechain": True}
         elif source == "qwenwork":
             marker = {"origin": {"kind": "agent"}}
+        elif source == "qoder":
+            # Qoder stamps the machine-written background notice on
+            # `origin.kind`; a human or bridged turn is `human` / `bridge`.
+            marker = {"origin": {"kind": "task-notification"}}
         elif source == "qwen-code":
             # qwen-code decides authorship from `provenance`, not from a flag:
             # anything that is not `real_user` is not the person's words.

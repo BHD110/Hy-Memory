@@ -557,6 +557,7 @@ it("maps every exact one-click host and keeps profile-based Harness out", () => 
     "workbuddy",
     "opencode",
     "qwen-code",
+    "qoder",
     "hermes",
     "pi",
   ])

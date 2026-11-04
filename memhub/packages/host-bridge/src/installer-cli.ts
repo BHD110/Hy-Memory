@@ -13,6 +13,7 @@ import {
   piLayout,
   planRecallInstall,
   previewRecallInstall,
+  qoderLayout,
   qwenCodeLayout,
   type RecallHostLayout,
   refuseDisabledHostOperation,
@@ -28,6 +29,7 @@ const HOSTS = [
   "cursor",
   "claude-code",
   "codex",
+  "qoder",
   "workbuddy",
   "workbuddy-scattered",
   "opencode",
@@ -158,7 +160,7 @@ async function main(): Promise<void> {
   }
   throw new Error(
     "Usage: installer-cli <plan|preview|apply|verify|preview-rollback|rollback> " +
-      "[--host cursor|claude-code|codex] --host-dir <dir> [--config <path>] " +
+      "[--host cursor|claude-code|codex|qoder] --host-dir <dir> [--config <path>] " +
       "[--allow-default-config] " +
       "[--runtime-command <path> --mcp-entry <path> --discovery <path>] " +
       "[--recall-cli <path>] [--credential-file <path>] " +
@@ -182,6 +184,9 @@ function resolveLayout(values: Map<string, string>): RecallHostLayout {
   }
   if (host === "codex") {
     return codexLayout(hostDir);
+  }
+  if (host === "qoder") {
+    return qoderLayout(hostDir);
   }
   if (host === "workbuddy") {
     return workbuddyLayout(hostDir);

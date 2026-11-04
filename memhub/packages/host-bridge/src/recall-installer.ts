@@ -558,6 +558,21 @@ export function workbuddyLayout(workbuddyDir: string): RecallHostLayout {
   };
 }
 
+/** Qoder CN shares its user configuration between Desktop and CLI. */
+export function qoderLayout(qoderDir: string): RecallHostLayout {
+  const root = path.resolve(qoderDir);
+  return {
+    hostId: "qoder",
+    hostLabel: "Qoder CN",
+    configPath: path.join(root, "settings.json"),
+    format: "json",
+    channel: "mcp",
+    ...looseSkill(root),
+    journalPath: path.join(root, ".one-memory", "recall-install.json"),
+    containmentRoot: root,
+  };
+}
+
 /** How recall used to be installed into WorkBuddy, kept so it can be removed.
  *
  * Nothing installs this any more. It exists because machines carry it: an entry
@@ -783,6 +798,15 @@ export async function planRecallInstall(
   const normalized = normalizeRuntime(runtime, layout.channel);
   if (layout.hostId === "workbuddy" && normalized.recallCliPath !== undefined) {
     await assertWorkbuddyInjectionEntrypoints(normalized);
+  }
+  if (layout.hostId === "qoder") {
+    if (!normalized.recallCliPath)
+      throw new Error("Qoder CN needs recallCliPath for its hook");
+    await assertWorkbuddyInjectionEntrypoints(normalized);
+    await assertExecutableFile(
+      resolveCaptureCommand(normalized),
+      "captureCommand",
+    );
   }
   const paths = {
     mcp: layout.configPath,
@@ -1096,6 +1120,14 @@ export async function applyRecallInstall(
   }
   const originalMcp = files.mcp?.before ?? null;
   const originalSkill = files.skill?.before ?? null;
+  // Qoder's hook file and runner are re-planned on every install. A recorded
+  // "we created this" from the first install must survive a reinstall, or
+  // uninstall would leave the runner behind as a file it thinks the user owns.
+  const previousQoderHooks =
+    plan.layout.hostId === "qoder"
+      ? ((await readJournalIfPresent(plan.paths.journal, plan.layout))
+          ?.capture_hooks ?? [])
+      : [];
   const ledger = new MutationLedger();
   try {
     if (plan.paths.mcp !== null && files.mcp !== null) {
@@ -1216,14 +1248,19 @@ export async function applyRecallInstall(
       ...(files.captures.length === 0
         ? {}
         : {
-            capture_hooks: files.captures.map((file) => ({
-              path: file.path,
-              command: file.command,
-              created: file.before === null,
-              kind: file.kind,
-              hash: hash(file.after),
-              previous: file.before,
-            })),
+            capture_hooks: files.captures.map((file) => {
+              const prior = previousQoderHooks.find(
+                (item) => item.path === file.path,
+              );
+              return {
+                path: file.path,
+                command: file.command,
+                created: prior?.created ?? file.before === null,
+                kind: file.kind,
+                hash: hash(file.after),
+                previous: prior?.previous ?? file.before,
+              };
+            }),
           }),
     };
     const legacyHash =
@@ -1372,6 +1409,18 @@ async function plannedFiles(plan: RecallInstallPlan): Promise<PlannedFiles> {
   }
   const { registries, trees } = await plannedPluginFiles(plan);
   const captures = await plannedCaptures(plan);
+  // Qoder CN stores MCP and hooks in the same settings object. Write it once,
+  // with both edits, so neither edit can overwrite the other.
+  const shared =
+    mcp === null ? undefined : captures.find((file) => file.path === mcp!.path);
+  if (mcp !== null && shared !== undefined) {
+    shared.after = writeInstalledServer(
+      shared.after,
+      plan.layout,
+      plan.next.server!,
+    );
+    mcp = null;
+  }
   if (plan.paths.skill === null || plan.next.skill === null) {
     return { mcp, skill: null, registries, trees, captures };
   }
@@ -1873,6 +1922,28 @@ export async function verifyRecallInstall(
       );
     }
   }
+  if (layout.hostId === "qoder") {
+    const recorded = journal.capture_hooks ?? [];
+    const runner = recorded.find((file) => file.kind === "owned");
+    const settings = recorded.find((file) => file.kind === "merge");
+    if (
+      !runner ||
+      !settings ||
+      runner.path !==
+        path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs") ||
+      settings.path !== layout.configPath ||
+      hash((await readOptional(runner.path)) ?? "") !== runner.hash
+    ) {
+      throw new Error("MemHub Qoder CN hook verification failed");
+    }
+    const capture = await inspectCapture(
+      layout,
+      settings.command,
+      readOptional,
+    );
+    if (!capture.ours || capture.findings.length)
+      throw new Error("MemHub Qoder CN hook verification failed");
+  }
   // For a CLI host the skill is the installed artifact, so the discovery path
   // it names is the one the host will actually use. Read back from the file
   // rather than recomputed, because a wrong path here is exactly the failure
@@ -2047,7 +2118,27 @@ export async function planRecallUninstall(
   const capture = await captureRemovalFiles(layout, journal);
   if (capture.review.length)
     return { layout, files: [], removedRoots: [], review: capture.review };
-  files.push(...capture.files);
+  // Qoder CN stores MCP and hooks in one settings object. The hook removal was
+  // computed against the file as it stands, so the server removal has to be
+  // applied on top of that result rather than planned as a second write.
+  for (const file of capture.files) {
+    const shared = files.find((item) => item.path === file.path);
+    if (shared && file.path === layout.configPath) {
+      const stripped =
+        file.after === null
+          ? null
+          : removeInstalledServer(file.after, layout, {
+              previous: journal.previous_server,
+              displaced: journal.displaced,
+            });
+      shared.after =
+        stripped !== null &&
+        !journal.config_existed &&
+        Object.keys(JSON.parse(stripped)).length === 0
+          ? null
+          : stripped;
+    } else files.push(file);
+  }
   return { layout, files, removedRoots, review: [] };
 }
 
@@ -3677,6 +3768,11 @@ async function layoutManagedTargets(
   const capturePath = captureFilePath(layout);
   if (capturePath !== null)
     targets.push({ role: "capture", path: capturePath });
+  if (layout.hostId === "qoder")
+    targets.push({
+      role: "capture",
+      path: path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs"),
+    });
   return targets;
 }
 
@@ -3791,9 +3887,10 @@ async function writeLeafNoFollow(
   mode: number,
   onWritten?: () => void,
 ): Promise<void> {
-  // Fail closed if the platform cannot do a no-follow open. Silently dropping
-  // O_NOFOLLOW would reopen the exact hole this fix closes.
-  if (constants.O_NOFOLLOW === undefined) {
+  // Fail closed if the platform cannot do a no-follow open. Windows has no
+  // O_NOFOLLOW; there the non-truncating open plus the handle/leaf identity
+  // check below stands in for it.
+  if (constants.O_NOFOLLOW === undefined && process.platform !== "win32") {
     throw new UnsafeManagedPathError(
       "write",
       target,
@@ -3818,11 +3915,11 @@ async function writeLeafNoFollow(
   // The leaf's own identity, when it exists, is what the write must land on.
   const plannedLeaf = await lstatIdentity(target);
   const flags = plannedLeaf
-    ? constants.O_WRONLY | constants.O_NOFOLLOW
+    ? constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0)
     : constants.O_WRONLY |
       constants.O_CREAT |
       constants.O_EXCL |
-      constants.O_NOFOLLOW;
+      (constants.O_NOFOLLOW ?? 0);
   let handle: FileHandle;
   try {
     handle = await open(target, flags, mode);
@@ -3869,6 +3966,14 @@ async function writeLeafNoFollow(
         snapshot.resolvedParent,
         "leaf identity changed since approval",
       );
+    }
+    // Windows: open without truncation and verify handle/leaf identity before
+    // mutation. O_EXCL protects creation; never replace this with O_TRUNC.
+    if (process.platform === "win32") {
+      const leaf = await lstatIdentity(target);
+      if (leaf === null || leaf.dev !== opened.dev || leaf.ino !== opened.ino) {
+        throw new Error("write_leaf_identity_changed");
+      }
     }
     await handle.truncate(0);
     await handle.writeFile(content, { encoding: "utf8" });
@@ -4089,7 +4194,7 @@ async function writeLeafExternal(
   mode: number,
   onWritten?: () => void,
 ): Promise<void> {
-  if (constants.O_NOFOLLOW === undefined) {
+  if (constants.O_NOFOLLOW === undefined && process.platform !== "win32") {
     throw new UnsafeManagedPathError(
       "write-config",
       targetPath,
@@ -4099,11 +4204,11 @@ async function writeLeafExternal(
   }
   const plannedLeaf = await lstatIdentity(targetPath);
   const flags = plannedLeaf
-    ? constants.O_WRONLY | constants.O_NOFOLLOW
+    ? constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0)
     : constants.O_WRONLY |
       constants.O_CREAT |
       constants.O_EXCL |
-      constants.O_NOFOLLOW;
+      (constants.O_NOFOLLOW ?? 0);
   let handle: FileHandle;
   try {
     handle = await open(targetPath, flags, mode);
@@ -4147,6 +4252,14 @@ async function writeLeafExternal(
         path.dirname(targetPath),
         "config identity changed since approval",
       );
+    }
+    // Windows: open without truncation and verify handle/leaf identity before
+    // mutation. O_EXCL protects creation; never replace this with O_TRUNC.
+    if (process.platform === "win32") {
+      const leaf = await lstatIdentity(targetPath);
+      if (leaf === null || leaf.dev !== opened.dev || leaf.ino !== opened.ino) {
+        throw new Error("write_leaf_identity_changed");
+      }
     }
     await handle.truncate(0);
     await handle.writeFile(content, { encoding: "utf8" });

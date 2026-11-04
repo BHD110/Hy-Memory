@@ -15,7 +15,7 @@ const FRESH_MS = 5_000;
 export const HOST_POLL_MS = 3_000;
 /** The bridge is IPC with no deadline of its own; a read that never answers
  * must not hold the query (and every later poll) forever. */
-export const HOST_READ_TIMEOUT_MS = 10_000;
+export const HOST_READ_TIMEOUT_MS = 20_000;
 const ALL_HOSTS = "*";
 
 queryClient.setQueryDefaults(HOSTS_KEY, {

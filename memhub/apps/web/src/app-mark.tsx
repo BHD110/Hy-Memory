@@ -9,6 +9,7 @@ const APP_ICON_BY_ID: ReadonlyArray<readonly [string, string]> = [
   ["cursor", "cursor"],
   ["hermes", "hermes"],
   ["codex", "codex"],
+  ["qoder", "qoder"],
   ["claude", "claude"],
   ["deepseek", "deepseek"],
   ["qwen", "qwen"],

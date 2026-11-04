@@ -578,6 +578,7 @@ function sourceLabel(sourceId: string) {
     cursor: "Cursor",
     codex: "Codex",
     "claude-code": "Claude Code",
+    qoder: "Qoder CN",
   };
   return labels[sourceId] ?? sourceId;
 }

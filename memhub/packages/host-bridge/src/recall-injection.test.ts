@@ -139,6 +139,7 @@ function contextResponse(
 
 async function fixture(
   options: {
+    hostId?: string;
     hits?: RecallHit[];
     raw?: RawMessage[];
     coreDelayMs?: number;
@@ -154,7 +155,9 @@ async function fixture(
   const root = await mkdtemp(path.join(os.tmpdir(), "om-inject-"));
   roots.push(root);
   const store = await HostGrantStore.initialize(path.join(root, "grants"));
-  const issued = await store.createInstallation({ hostId: "workbuddy" });
+  const issued = await store.createInstallation({
+    hostId: options.hostId ?? "workbuddy",
+  });
   const approved = await store.approveGrants({
     installationId: issued.receipt.installationId,
     expectedRevision: issued.receipt.revision,
@@ -302,6 +305,33 @@ async function diagnostics(dataDir: string, minimumLines = 1) {
 }
 
 describe("WorkBuddy recall injection hook", () => {
+  it("Qoder CN recalls from the documented session and prompt payload without turn_id", async () => {
+    const { env, calls, store, approved } = await fixture({
+      hostId: "qoder",
+      hits: [hit(0, "用户喜欢绿色")],
+    });
+    const input = prompt("上次我喜欢什么颜色", { turn_id: undefined });
+    const result = await runRecallInjection("qoder", input, env);
+    expect(result.outcome).toBe("injected");
+    expect(context(result.stdout)).toContain("用户喜欢绿色");
+    expect(calls).toHaveLength(1);
+    const ordinary = await runRecallInjection(
+      "qoder",
+      prompt("你好", { turn_id: undefined }),
+      env,
+    );
+    expect(ordinary.stdout).toBe("");
+    expect(calls).toHaveLength(1);
+    await store.revoke({
+      installationId: approved.installationId,
+      expectedRevision: approved.revision,
+    });
+    const denied = await runRecallInjection("qoder", input, env);
+    expect(denied.outcome).toBe("denied");
+    expect(denied.stdout).toBe("");
+    expect(calls).toHaveLength(1);
+  }, 60000);
+
   it("injects at most eight memories inside the history-only tag, with the linked quote", async () => {
     const hits = Array.from({ length: 10 }, (_, index) =>
       hit(index, `记忆第 ${index} 条：用户偏好 ${index}`),

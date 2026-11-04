@@ -877,3 +877,91 @@ def test_a_hook_row_adopted_by_the_file_takes_the_files_time_and_position(tmp_pa
         "a1:tool",
         "u2",
     ]
+
+
+def test_qoder_cn_hook_prefers_granted_transcript_and_dedupes(tmp_path) -> None:
+    store = _grant(tmp_path, "qoder", sync=True)
+    database = tmp_path / "one-memory.sqlite3"
+    root = tmp_path / "home" / ".qoder-cn"
+    project = root / "projects" / "project-a"
+    project.mkdir(parents=True)
+    session = "a1b2c3d4-0000-4000-8000-000000000001"
+    transcript = project / f"{session}.jsonl"
+    transcript.write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False) + "\n"
+            for record in (
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "sessionId": session,
+                    "origin": {"kind": "human"},
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "记得用深绿色"}],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "sessionId": session,
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "已改成深绿色"}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "machine",
+                    "sessionId": session,
+                    "userType": "external",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "机器注入内容"}],
+                    },
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert capture_hook(
+        "qoder",
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "message_id": "u1",
+            "prompt": "记得用深绿色",
+        },
+        database,
+    )
+    stop = {
+        "hook_event_name": "Stop",
+        "session_id": session,
+        "transcript_path": str(transcript),
+        "last_assistant_message": "不该采用回退正文",
+    }
+    assert capture_hook("qoder", stop, database)
+    assert _rows(database) == [
+        ("记得用深绿色", "person", "u1"),
+        ("已改成深绿色", "agent", "a1"),
+    ]
+    assert store.count() == 2
+    assert capture_hook("qoder", stop, database)
+    assert store.count() == 2
+
+
+def test_qoder_cn_hook_obeys_sync_and_grant_revocation(tmp_path) -> None:
+    store = _grant(tmp_path, "qoder", sync=True)
+    database = tmp_path / "one-memory.sqlite3"
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-1",
+        "prompt": "只在授权后保存",
+    }
+    settings = ConfigStore(database.parent)
+    settings.set_sync("qoder", False)
+    assert not capture_hook("qoder", payload, database)
+    settings.set_sync("qoder", True)
+    SourceGrantStore(database, home=tmp_path / "home").revoke(user_id="local", source_id="qoder")
+    assert not capture_hook("qoder", payload, database)
+    assert store.count() == 0

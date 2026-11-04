@@ -41,6 +41,10 @@ from one_memory.imports.sources.opencode import (
     create_opencode_adapter,
 )
 from one_memory.imports.sources.pi import PI_DESCRIPTOR, create_pi_adapter
+from one_memory.imports.sources.qoder_cn import (
+    QODER_CN_DESCRIPTOR,
+    create_qoder_cn_adapter,
+)
 from one_memory.imports.sources.qwen_code import (
     QWEN_CODE_DESCRIPTOR,
     create_qwen_code_adapter,
@@ -199,6 +203,21 @@ def build_source_catalog(
             # `qwen mcp` but never a session, so `projects/` does not exist.
             capabilities=with_recall_install_target(
                 polling_live_sync_capabilities(verification=VerificationLevel.FIXTURE_ONLY)
+            ),
+        ),
+        SourceRegistration(
+            descriptor=QODER_CN_DESCRIPTOR,
+            candidate=SourceRootCandidate(
+                path=home / ".qoder-cn", kind=RootCandidateKind.DEFAULT
+            ),
+            create_adapter=create_qoder_cn_adapter,
+            # Qoder CN keeps both the transcripts (`projects/*/<uuid>.jsonl`,
+            # Claude-Code-shaped) and its own memory files (`memory/*.md`,
+            # `projects/*/memory/*.md`) under one root. Memory files are settled
+            # conclusions, so they import as MEMORY_CONTENT and skip a second
+            # extraction; transcripts use the shared append cursor.
+            capabilities=with_recall_install_target(
+                polling_live_sync_capabilities(verification=VerificationLevel.REAL_REPLAYED)
             ),
         ),
         SourceRegistration(
