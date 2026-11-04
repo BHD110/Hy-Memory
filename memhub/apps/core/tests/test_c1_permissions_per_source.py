@@ -71,7 +71,7 @@ def _jsonl_sources() -> list[str]:
     # below. Its import, cursor and edit behaviour is covered in
     # test_secondary_source_adapters.
     return sorted(
-        source for source in catalog if source not in PAUSED | {"hermes", "opencode", "qoder"}
+        source for source in catalog if source not in PAUSED | {"hermes", "opencode", "qoder", "zcode"}
     )
 
 

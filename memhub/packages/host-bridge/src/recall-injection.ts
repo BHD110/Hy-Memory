@@ -128,7 +128,7 @@ export interface InjectionResult {
   trigger: AutoRecallDecision | null;
 }
 
-const SOURCES = new Set(["workbuddy", "qoder"]);
+const SOURCES = new Set(["workbuddy", "qoder", "zcode"]);
 const DENIED = new Set([
   "host_credential_unavailable",
   "host_authorization_required",

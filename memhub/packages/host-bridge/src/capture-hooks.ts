@@ -35,7 +35,18 @@ const COMMAND_HOSTS: Record<string, readonly string[]> = {
   "claude-code": ["UserPromptSubmit", "Stop", "SubagentStop"],
   codex: ["UserPromptSubmit", "Stop"],
   qoder: ["UserPromptSubmit", "Stop", "SessionStart"],
+  zcode: ["UserPromptSubmit", "Stop", "SessionStart"],
 };
+
+/** Hosts whose hook file is a JSON config shared with their MCP entry, and
+ * whose hook command is an owned runner rather than a shell one-liner. */
+export function isCliHookHost(hostId: string): boolean {
+  return hostId === "qoder" || hostId === "zcode";
+}
+
+export function cliHookRunnerName(hostId: string): string {
+  return `${hostId}-hook.cjs`;
+}
 
 export function resolveCaptureCommand(runtime: RecallRuntime): string {
   if (runtime.captureCommand !== undefined && runtime.captureCommand !== "") {
@@ -84,8 +95,8 @@ export async function planCaptureFiles(
   runtime: RecallRuntime,
   readFile: (target: string) => Promise<string | null>,
 ): Promise<CaptureFile[]> {
-  if (layout.hostId === "qoder") {
-    return planQoderHooks(layout, runtime, readFile);
+  if (isCliHookHost(layout.hostId)) {
+    return planCliHooks(layout, runtime, readFile);
   }
   const sourceId = layout.hostId;
   const command = captureCommandFor(layout, runtime);
@@ -136,7 +147,9 @@ export async function planCaptureFiles(
 
 export function captureFilePath(layout: RecallHostLayout): string | null {
   const root = layout.containmentRoot;
-  if (layout.hostId === "claude-code" || layout.hostId === "qoder") return path.join(root, "settings.json");
+  if (layout.hostId === "claude-code") return path.join(root, "settings.json");
+  if (layout.hostId === "qoder") return path.join(root, "settings.json");
+  if (layout.hostId === "zcode") return path.join(root, "cli", "config.json");
   if (layout.hostId in COMMAND_HOSTS) return path.join(root, "hooks.json");
   if (layout.hostId === "pi")
     return path.join(root, "extensions", "one-memory-capture.js");
@@ -150,7 +163,8 @@ export function captureCommandFor(
   layout: RecallHostLayout,
   runtime: RecallRuntime,
 ): string {
-  if (layout.hostId === "qoder") return hookCommandIdentity(qoderHook(layout, runtime));
+  if (layout.hostId === "qoder" || layout.hostId === "zcode")
+    return hookCommandIdentity(cliHook(layout, runtime));
   return failOpenHookCommand(
     resolveCaptureCommand(runtime),
     `capture ${layout.hostId}`,
@@ -197,11 +211,22 @@ export async function inspectCapture(
     else if (namesCapture(command, layout.hostId))
       findings.push({ path: filePath, where });
   }
-  if (layout.hostId === "qoder" && ours) {
-    for (const event of COMMAND_HOSTS.qoder!) {
-      const entries = (document as {hooks?: Record<string, unknown>}).hooks?.[event];
-      if (!hookCommands({hooks: {[event]: entries}}).some(({command}) => sameHookCommand(command, expected))) {
-        findings.push({path: filePath, where: `hooks.${event}: MemHub hook missing or changed`});
+  if (isCliHookHost(layout.hostId) && ours) {
+    const hooks = (document as { hooks?: Record<string, unknown> }).hooks ?? {};
+    for (const event of COMMAND_HOSTS[layout.hostId]!) {
+      const pair = eventArrayPairs(hooks).find(
+        ([name]) => name === event || name === `events.${event}`,
+      );
+      if (
+        !pair ||
+        !hookCommands({ hooks: { [event]: pair[1] } }).some(({ command }) =>
+          sameHookCommand(command, expected),
+        )
+      ) {
+        findings.push({
+          path: filePath,
+          where: `hooks.${event}: MemHub hook missing or changed`,
+        });
       }
     }
   }
@@ -251,11 +276,29 @@ function hookCommands(
       for (const [index, hook] of record.hooks.entries())
         visit(hook, `${where}.hooks[${index}]`);
   };
-  for (const [event, entries] of Object.entries(hooks))
-    if (Array.isArray(entries))
-      for (const [index, entry] of entries.entries())
-        visit(entry, `hooks.${event}[${index}]`);
+  for (const [event, entries] of eventArrayPairs(
+    hooks as Record<string, unknown>,
+  ))
+    for (const [index, entry] of entries.entries())
+      visit(entry, `hooks.${event}[${index}]`);
   return commands;
+}
+
+/** Event arrays in either host shape: direct (`hooks.SessionStart`) or
+ * nested under `hooks.events` (ZCode). */
+function eventArrayPairs(
+  hooks: Record<string, unknown>,
+): Array<[string, unknown[]]> {
+  const events = hooks.events;
+  const container =
+    events && typeof events === "object" && !Array.isArray(events)
+      ? (events as Record<string, unknown>)
+      : hooks;
+  const pairs: Array<[string, unknown[]]> = [];
+  for (const [event, entries] of Object.entries(container))
+    if (Array.isArray(entries))
+      pairs.push([container === hooks ? event : `events.${event}`, entries]);
+  return pairs;
 }
 
 /** True when stripping our command left no hook entries. */
@@ -266,12 +309,10 @@ export function strippedCaptureIsEmpty(raw: string): boolean {
   }
   const hooks = (parsed as { hooks?: unknown }).hooks;
   if (hooks === undefined) return true;
-  return (
-    typeof hooks === "object" &&
-    hooks !== null &&
-    !Array.isArray(hooks) &&
-    Object.keys(hooks).length === 0
-  );
+  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
+    return false;
+  }
+  return eventArrayPairs(hooks as Record<string, unknown>).length === 0;
 }
 
 export function stripCaptureCommand(raw: string, command: string): string {
@@ -282,15 +323,21 @@ export function stripCaptureCommand(raw: string, command: string): string {
   const document = parsed as Record<string, unknown>;
   const hooks = document.hooks;
   if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return raw;
-  for (const [event, entries] of Object.entries(
-    hooks as Record<string, unknown>,
-  )) {
+  const record = hooks as Record<string, unknown>;
+  const events = record.events;
+  const container =
+    events && typeof events === "object" && !Array.isArray(events)
+      ? (events as Record<string, unknown>)
+      : record;
+  for (const [event, entries] of Object.entries(container)) {
     if (!Array.isArray(entries)) continue;
     const kept = entries.flatMap((entry) => stripEntry(entry, command));
-    if (kept.length === 0) delete (hooks as Record<string, unknown>)[event];
-    else (hooks as Record<string, unknown>)[event] = kept;
+    if (kept.length === 0) delete container[event];
+    else container[event] = kept;
   }
-  if (Object.keys(hooks as object).length === 0) delete document.hooks;
+  if (container !== record && Object.keys(container).length === 0)
+    delete record.events;
+  if (Object.keys(record).length === 0) delete document.hooks;
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
@@ -331,67 +378,161 @@ function sameHookCommand(left: string, right: string): boolean {
   return sameShellCommand(left, right);
 }
 
-function qoderHook(layout: RecallHostLayout, runtime: RecallRuntime): Record<string, unknown> {
+function cliHook(
+  layout: RecallHostLayout,
+  runtime: RecallRuntime,
+): Record<string, unknown> {
+  const runner = path.join(
+    layout.containmentRoot,
+    ".one-memory",
+    cliHookRunnerName(layout.hostId),
+  );
+  if (layout.hostId === "zcode") {
+    // ZCode's `process` hook launches the command directly, with no shell and
+    // no environment overlay. A packaged runtimeCommand is the installed Node
+    // binary; a development build runs the Electron executable instead, and
+    // that one needs ELECTRON_RUN_AS_NODE, which only the shell form can set.
+    if (!/(?:^|[\\/])electron(?:\.exe)?$/iu.test(runtime.runtimeCommand)) {
+      return {
+        type: "process",
+        name: "memhub-zcode",
+        command: runtime.runtimeCommand,
+        args: [runner, "capture", "zcode"],
+        timeoutMs: 5000,
+      };
+    }
+    return {
+      type: "command",
+      name: "memhub-zcode",
+      command:
+        process.platform === "win32"
+          ? `set "ELECTRON_RUN_AS_NODE=1" && "${runtime.runtimeCommand}" "${runner}" capture zcode`
+          : `ELECTRON_RUN_AS_NODE=1 "${runtime.runtimeCommand}" "${runner}" capture zcode`,
+      timeout: 5,
+    };
+  }
   return {
     type: "command",
     name: "memhub-qoder",
     command: runtime.runtimeCommand,
-    args: [path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs"), "capture", "qoder"],
+    args: [runner, "capture", "qoder"],
     env: { ELECTRON_RUN_AS_NODE: "1" },
     timeout: 5,
   };
 }
 
-async function planQoderHooks(
-  layout: RecallHostLayout, runtime: RecallRuntime,
+async function planCliHooks(
+  layout: RecallHostLayout,
+  runtime: RecallRuntime,
   readFile: (target: string) => Promise<string | null>,
 ): Promise<CaptureFile[]> {
-  if (!runtime.recallCliPath) throw new Error("Qoder CN needs recallCliPath for its hook");
-  const target = path.join(layout.containmentRoot, "settings.json");
-  const runner = path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs");
+  const label = layout.hostLabel;
+  if (!runtime.recallCliPath)
+    throw new Error(`${label} needs recallCliPath for its hook`);
+  const target = captureFilePath(layout);
+  if (target === null) throw new Error(`${label} has no hook configuration file`);
+  const runner = path.join(
+    layout.containmentRoot,
+    ".one-memory",
+    cliHookRunnerName(layout.hostId),
+  );
   const before = await readFile(target);
   const document = before === null ? {} : JSON.parse(before);
-  if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error("Qoder CN settings must be a JSON object");
-  if (document.hooks !== undefined && (!document.hooks || typeof document.hooks !== "object" || Array.isArray(document.hooks))) throw new Error("Qoder CN hooks must be a JSON object");
-  const entry = qoderHook(layout, runtime);
+  if (!document || typeof document !== "object" || Array.isArray(document))
+    throw new Error(`${label} configuration must be a JSON object`);
+  if (
+    document.hooks !== undefined &&
+    (!document.hooks ||
+      typeof document.hooks !== "object" ||
+      Array.isArray(document.hooks))
+  )
+    throw new Error(`${label} hooks must be a JSON object`);
+  const entry = cliHook(layout, runtime);
   const command = hookCommandIdentity(entry);
   const runnerBefore = await readFile(runner);
-  if (runnerBefore !== null && !runnerBefore.startsWith("// Managed by MemHub: Qoder CN")) throw new Error("Qoder CN hook runner already exists and is not managed by MemHub");
-  const hooks = document.hooks ?? {};
-  for (const event of COMMAND_HOSTS.qoder!) {
-    if (hooks[event] !== undefined && !Array.isArray(hooks[event])) throw new Error("Qoder CN hook event must be an array");
-    const entries = hooks[event] ?? [];
+  if (
+    runnerBefore !== null &&
+    !runnerBefore.startsWith(`// Managed by MemHub: ${label}`)
+  )
+    throw new Error(
+      `${label} hook runner already exists and is not managed by MemHub`,
+    );
+  const hooks = (document.hooks ?? {}) as Record<string, unknown>;
+  const events =
+    layout.hostId === "zcode"
+      ? ((): Record<string, unknown> => {
+          const existing = hooks.events;
+          if (
+            existing !== undefined &&
+            (!existing ||
+              typeof existing !== "object" ||
+              Array.isArray(existing))
+          )
+            throw new Error(`${label} hook events must be a JSON object`);
+          // Config-file hooks are off unless this is explicitly true; an
+          // install that forgets it writes a hook ZCode will never run.
+          hooks.enabled = true;
+          return (hooks.events = { ...((existing as Record<string, unknown>) ?? {}) });
+        })()
+      : hooks;
+  for (const event of COMMAND_HOSTS[layout.hostId]!) {
+    if (events[event] !== undefined && !Array.isArray(events[event]))
+      throw new Error(`${label} hook event must be an array`);
+    const entries = events[event] ?? [];
     // Runtime upgrades may move node/electron. The owned runner path stays
     // fixed; replace only entries for that exact runner, preserving neighbors.
-    const kept = entries.flatMap((item: unknown) => {
+    const kept = (entries as unknown[]).flatMap((item: unknown) => {
       if (!item || typeof item !== "object") return [item];
       const group = item as Record<string, unknown>;
       if (!Array.isArray(group.hooks)) return [item];
-      const hooks = group.hooks.filter((hook: unknown) => {
+      const keptHooks = group.hooks.filter((hook: unknown) => {
         if (!hook || typeof hook !== "object") return true;
         const own = hook as Record<string, unknown>;
-        return !(own.name === "memhub-qoder" && Array.isArray(own.args) &&
-          own.args.length === 3 && own.args[0] === runner && own.args[1] === "capture" && own.args[2] === "qoder");
+        const ownRunner =
+          (Array.isArray(own.args) &&
+            own.args.length === 3 &&
+            own.args[0] === runner &&
+            own.args[1] === "capture" &&
+            own.args[2] === layout.hostId) ||
+          (typeof own.command === "string" && own.command.includes(runner));
+        return !(own.name === `memhub-${layout.hostId}` && ownRunner);
       });
-      return hooks.length ? [{...group, hooks}] : [];
+      return keptHooks.length ? [{ ...group, hooks: keptHooks }] : [];
     });
-    hooks[event] = [...kept, { hooks: [entry] }];
+    events[event] = [...kept, { hooks: [entry] }];
   }
   document.hooks = hooks;
   return [
-    {path: runner, before: runnerBefore, after: qoderRunner(runtime), command, kind: "owned"},
-    {path: target, before, after: `${JSON.stringify(document, null, 2)}\n`, command, kind: "merge"},
+    {
+      path: runner,
+      before: runnerBefore,
+      after: cliHookRunner(layout, runtime),
+      command,
+      kind: "owned",
+    },
+    {
+      path: target,
+      before,
+      after: `${JSON.stringify(document, null, 2)}\n`,
+      command,
+      kind: "merge",
+    },
   ];
 }
 
-/** No sh, environment assignments or shell quoting: Qoder's verified args/env
- * hook shape runs on Windows with the same executable used by the MCP entry. */
-function qoderRunner(runtime: RecallRuntime): string {
+/** No sh, environment assignments or shell quoting: both hosts read the same
+ * args-style hook payload, and the installed runner keeps the command total. */
+function cliHookRunner(
+  layout: RecallHostLayout,
+  runtime: RecallRuntime,
+): string {
+  const label = layout.hostLabel;
+  const hostId = layout.hostId;
   const settings = JSON.stringify({
     recall: runtime.recallCliPath, capture: resolveCaptureCommand(runtime),
     discovery: runtime.discoveryPath, credential: runtime.credentialFile, data: runtime.dataDir,
   });
-  return `// Managed by MemHub: Qoder CN prompt recall and visible-turn capture.\n"use strict";\nconst {spawn}=require("node:child_process");\nconst config=${settings};\nlet input=""; let child; let ended=false;\nconst finish=()=>{if(ended)return;ended=true;try{child?.kill();}catch{}process.exit(0);};\nconst timer=setTimeout(finish,4500);\nprocess.stdin.setEncoding("utf8");\nprocess.stdin.on("data",chunk=>{input+=chunk;if(Buffer.byteLength(input)>4*1024*1024)finish();});\nprocess.stdin.on("error",finish);\nprocess.stdin.on("end",()=>{\n  let payload;try{payload=JSON.parse(input);}catch{return finish();}\n  const event=payload.hook_event_name || payload.hookEventName;\n  if(!["UserPromptSubmit","SessionStart","Stop"].includes(event))return finish();\n  const env={...process.env,ONE_MEMORY_BROKER_DISCOVERY:config.discovery,ONE_MEMORY_CAPTURE_COMMAND:config.capture,ONE_MEMORY_CAPTURE_DEADLINE_S:"4"};\n  if(config.credential)env.ONE_MEMORY_HOST_CREDENTIAL_FILE=config.credential;\n  if(config.data)env.ONE_MEMORY_DATA_DIR=config.data;\n  const injecting=event!=="Stop";\n  if(injecting)env.ELECTRON_RUN_AS_NODE="1";else delete env.ELECTRON_RUN_AS_NODE;\n  try{child=spawn(injecting?process.execPath:config.capture,injecting?[config.recall,"--inject","qoder"]:["capture","qoder"],{env,windowsHide:true,stdio:["pipe","pipe","ignore"]});}catch{return finish();}\n  let output="";child.stdout.setEncoding("utf8");child.stdout.on("data",chunk=>{output+=chunk;if(Buffer.byteLength(output)>64*1024)finish();});\n  child.on("error",finish);child.stdin.on("error",()=>{});child.stdin.end(input);\n  child.on("close",code=>{if(ended)return;clearTimeout(timer);if(injecting&&code===0&&output.trim()){try{const value=JSON.parse(output);if(value.hookSpecificOutput?.additionalContext)process.stdout.write(JSON.stringify(value)+"\\n");}catch{}}ended=true;process.exitCode=0;});\n});\n`;
+  return `// Managed by MemHub: ${label} prompt recall and visible-turn capture.\n"use strict";\nconst {spawn}=require("node:child_process");\nconst config=${settings};\nconst host=${JSON.stringify(hostId)};\nlet input=""; let child; let ended=false;\nconst finish=()=>{if(ended)return;ended=true;try{child?.kill();}catch{}process.exit(0);};\nconst timer=setTimeout(finish,4500);\nprocess.stdin.setEncoding("utf8");\nprocess.stdin.on("data",chunk=>{input+=chunk;if(Buffer.byteLength(input)>4*1024*1024)finish();});\nprocess.stdin.on("error",finish);\nprocess.stdin.on("end",()=>{\n  let payload;try{payload=JSON.parse(input);}catch{return finish();}\n  const event=payload.hook_event_name || payload.hookEventName;\n  if(!["UserPromptSubmit","SessionStart","Stop"].includes(event))return finish();\n  const env={...process.env,ONE_MEMORY_BROKER_DISCOVERY:config.discovery,ONE_MEMORY_CAPTURE_COMMAND:config.capture,ONE_MEMORY_CAPTURE_DEADLINE_S:"4"};\n  if(config.credential)env.ONE_MEMORY_HOST_CREDENTIAL_FILE=config.credential;\n  if(config.data)env.ONE_MEMORY_DATA_DIR=config.data;\n  const injecting=event!=="Stop";\n  if(injecting)env.ELECTRON_RUN_AS_NODE="1";else delete env.ELECTRON_RUN_AS_NODE;\n  try{child=spawn(injecting?process.execPath:config.capture,injecting?[config.recall,"--inject",host]:["capture",host],{env,windowsHide:true,stdio:["pipe","pipe","ignore"]});}catch{return finish();}\n  let output="";child.stdout.setEncoding("utf8");child.stdout.on("data",chunk=>{output+=chunk;if(Buffer.byteLength(output)>64*1024)finish();});\n  child.on("error",finish);child.stdin.on("error",()=>{});child.stdin.end(input);\n  child.on("close",code=>{if(ended)return;clearTimeout(timer);if(injecting&&code===0&&output.trim()){try{const value=JSON.parse(output);if(value.hookSpecificOutput?.additionalContext)process.stdout.write(JSON.stringify(value)+"\\n");}catch{}}ended=true;process.exitCode=0;});\n});\n`;
 }
 
 function mergeCommandHooks(

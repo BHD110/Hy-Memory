@@ -54,6 +54,7 @@ PATH_WORKSPACE_SOURCES = (
     "qwen-work",
     "qwen-code",
     "qoder",
+    "zcode",
     "workbuddy",
 )
 

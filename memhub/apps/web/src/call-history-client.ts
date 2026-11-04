@@ -58,6 +58,7 @@ export const CALL_HOSTS: Record<string, string> = {
   cursor: "Cursor",
   codex: "Codex",
   qoder: "Qoder CN",
+  zcode: "ZCode",
   "claude-code": "Claude Code",
   workbuddy: "WorkBuddy",
   opencode: "OpenCode",

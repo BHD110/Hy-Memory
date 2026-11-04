@@ -65,6 +65,7 @@ const SOURCE_HOST: Readonly<Record<string, string>> = {
   claude: "claude-code",
   codex: "codex",
   qoder: "qoder",
+  zcode: "zcode",
   workbuddy: "workbuddy",
   opencode: "opencode",
   "qwen-code": "qwen-code",

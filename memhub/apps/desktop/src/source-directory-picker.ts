@@ -128,4 +128,5 @@ const sourceLabels: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   qoder: "Qoder CN",
+  zcode: "ZCode",
 };

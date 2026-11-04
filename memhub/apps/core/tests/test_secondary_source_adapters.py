@@ -58,6 +58,7 @@ from one_memory.imports.sources.qwenwork import (
     parse_qwenwork_record,
 )
 from one_memory.imports.sources.registry import build_source_catalog
+from one_memory.imports.sources.zcode import create_zcode_adapter
 from one_memory.imports.sqlite_access import open_sqlite_readonly
 
 SECRET = "SECRET_DO_NOT_IMPORT"
@@ -762,6 +763,7 @@ def test_catalog_registers_every_source_and_secondary_defaults(tmp_path: Path) -
         "claude-code",
         "codex",
         "qoder",
+        "zcode",
         "pi",
         "qwenwork",
         # The plan's ten plus Qwen Code, which recall had been installed into
@@ -1429,5 +1431,170 @@ def test_qoder_cn_rejects_linked_memory_directory_and_oversized_file(tmp_path: P
     assert not _evidence(events)
     assert any(
         isinstance(event, ScanFailure) and event.reason_code is ScanIssueCode.FILE_TOO_LARGE
+        for event in events
+    )
+
+
+def _write_zcode_database(root: Path) -> None:
+    database = root / "cli" / "db" / "db.sqlite"
+    database.parent.mkdir(parents=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE session (
+                id text primary key,
+                directory text not null,
+                task_type text not null default 'interactive'
+            );
+            CREATE TABLE message (
+                id text primary key,
+                session_id text not null,
+                time_created integer not null,
+                data text not null
+            );
+            CREATE TABLE part (
+                id text primary key,
+                message_id text not null,
+                session_id text not null,
+                time_created integer not null,
+                data text not null,
+                sequence integer
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO session VALUES (?, ?, ?)",
+            ("sess-zcode", "D:/workspace/zcode-project", "interactive"),
+        )
+        messages = [
+            (
+                "msg-user",
+                {
+                    "role": "user",
+                    "synthetic": False,
+                    "time": {"created": 1_790_000_000_000},
+                    "semantics": {
+                        "origin": "real_user",
+                        "kind": "user_prompt",
+                        "uiVisibility": "visible",
+                    },
+                },
+                "please remember this project rule",
+            ),
+            (
+                "msg-reminder",
+                {
+                    "role": "user",
+                    "synthetic": True,
+                    "time": {"created": 1_790_000_001_000},
+                    "semantics": {
+                        "origin": "agent_runtime",
+                        "uiVisibility": "hidden",
+                    },
+                },
+                "MACHINE_NOT_A_PERSON",
+            ),
+            (
+                "msg-assistant",
+                {
+                    "role": "assistant",
+                    "time": {"created": 1_790_000_002_000},
+                    "semantics": {
+                        "origin": "agent_runtime",
+                        "uiVisibility": "visible",
+                    },
+                },
+                "I will remember",
+            ),
+        ]
+        for index, (message_id, data, text) in enumerate(messages):
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?)",
+                (message_id, "sess-zcode", data["time"]["created"], json.dumps(data)),
+            )
+            connection.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    f"part-{index}",
+                    message_id,
+                    "sess-zcode",
+                    data["time"]["created"],
+                    json.dumps({"type": "text", "text": text}),
+                    index,
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_zcode_imports_memory_markdown_and_visible_session_turns(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".zcode"
+    memory = root / "cli" / "memories" / "projects" / "project-a" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "MEMORY.md").write_text(
+        "# Index\n- [rule](rule.md)\n", encoding="utf-8"
+    )
+    (memory / "rule.md").write_text(
+        "---\nname: rule\ndescription: project rule\n"
+        "metadata:\n  type: project\n---\n\nUse SQLite locally.\n",
+        encoding="utf-8",
+    )
+    _write_zcode_database(root)
+    adapter = create_zcode_adapter(_grant("zcode", root, tmp_path))
+    state = asyncio.run(adapter.install_state())
+    assert state.installed and state.session_count == 2
+    events = _scan(adapter)
+    texts = [text.replace("\r\n", "\n") for text in _evidence_text(events)]
+    assert "Use SQLite locally.\n" in texts
+    assert "please remember this project rule" in texts
+    assert "I will remember" in texts
+    assert all(
+        value not in repr(texts) for value in ("MACHINE_NOT_A_PERSON", "# Index")
+    )
+    assert {row.evidence.role for row in _evidence(events)} == {
+        "memory",
+        "user",
+        "assistant",
+    }
+    # A complete scan leaves a readable cursor; the next one reads nothing new.
+    cursors = _cursors(events)
+    assert not _evidence(_scan(adapter, cursors=cursors))
+
+
+def test_zcode_rejects_linked_memory_directory_and_oversized_file(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".zcode"
+    projects = root / "cli" / "memories" / "projects"
+    projects.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("private", encoding="utf-8")
+    try:
+        (projects / "linked").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks unavailable")
+    adapter = create_zcode_adapter(_grant("zcode", root, tmp_path))
+    assert not _evidence(_scan(adapter))
+    (projects / "linked").unlink()
+    memory = projects / "project" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "huge.md").write_text("x" * 2048, encoding="utf-8")
+
+    async def collect():
+        return [
+            event
+            async for event in adapter.scan(ScanOptions(max_source_file_bytes=1024))
+        ]
+
+    events = asyncio.run(collect())
+    assert not _evidence(events)
+    assert any(
+        isinstance(event, ScanFailure)
+        and event.reason_code is ScanIssueCode.FILE_TOO_LARGE
         for event in events
     )

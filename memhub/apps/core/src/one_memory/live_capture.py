@@ -50,6 +50,7 @@ CAPTURE_SOURCES = frozenset(
         "pi",
         "qwen-code",
         "qoder",
+        "zcode",
         "qwenwork",
         "hermes",
         "deepseek-harness",
@@ -97,8 +98,14 @@ def capture_stdio(source_id: str, stdin: TextIO, output: TextIO) -> int:
     if sdk_migration_capture_fenced(database.parent):
         return 0
     try:
-        payload = json.loads(stdin.read() or "")
-    except json.JSONDecodeError:
+        # Hooks write UTF-8 JSON regardless of the Windows ANSI code page. A
+        # text-mode stdin decodes that as GBK and rejects Chinese prompts, so
+        # the bytes are read directly and decoded as the host encoded them.
+        buffer = getattr(stdin, "buffer", None)
+        raw = buffer.read() if buffer is not None else stdin.read()
+        text = raw.decode("utf-8-sig") if isinstance(raw, bytes) else raw
+        payload = json.loads(text or "")
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return 0
     try:
         capture_hook(source_id, payload, database)
@@ -152,9 +159,12 @@ def capture_hook(source_id: str, payload: object, database: Path) -> bool:
         return False
     if source_id == "pi" and _is_automated_session(first_string(payload.get("cwd"))):
         return False
-    if source_id == "qoder" and payload.get("hook_event_name") in _FALLBACK_EVENTS:
-        if _capture_transcript(source_id, payload, database):
-            return True
+    if (
+        source_id == "qoder"
+        and payload.get("hook_event_name") in _FALLBACK_EVENTS
+        and _capture_transcript(source_id, payload, database)
+    ):
+        return True
     lines = _messages(source_id, payload)
     if lines:
         conversation_id = _conversation(payload)

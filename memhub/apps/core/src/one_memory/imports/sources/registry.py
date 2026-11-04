@@ -41,6 +41,10 @@ from one_memory.imports.sources.opencode import (
     create_opencode_adapter,
 )
 from one_memory.imports.sources.pi import PI_DESCRIPTOR, create_pi_adapter
+from one_memory.imports.sources.qoder_cn import (
+    QODER_CN_DESCRIPTOR,
+    create_qoder_cn_adapter,
+)
 from one_memory.imports.sources.qwen_code import (
     QWEN_CODE_DESCRIPTOR,
     create_qwen_code_adapter,
@@ -49,13 +53,13 @@ from one_memory.imports.sources.qwenwork import (
     QWENWORK_DESCRIPTOR,
     create_qwenwork_adapter,
 )
-from one_memory.imports.sources.qoder_cn import (
-    QODER_CN_DESCRIPTOR,
-    create_qoder_cn_adapter,
-)
 from one_memory.imports.sources.workbuddy import (
     WORKBUDDY_DESCRIPTOR,
     create_workbuddy_adapter,
+)
+from one_memory.imports.sources.zcode import (
+    ZCODE_DESCRIPTOR,
+    create_zcode_adapter,
 )
 
 
@@ -156,6 +160,16 @@ def build_source_catalog(
                 path=home / ".qoder-cn", kind=RootCandidateKind.DEFAULT
             ),
             create_adapter=create_qoder_cn_adapter,
+            capabilities=with_recall_install_target(
+                polling_live_sync_capabilities(verification=VerificationLevel.REAL_REPLAYED)
+            ),
+        ),
+        SourceRegistration(
+            descriptor=ZCODE_DESCRIPTOR,
+            candidate=SourceRootCandidate(
+                path=home / ".zcode", kind=RootCandidateKind.DEFAULT
+            ),
+            create_adapter=create_zcode_adapter,
             capabilities=with_recall_install_target(
                 polling_live_sync_capabilities(verification=VerificationLevel.REAL_REPLAYED)
             ),

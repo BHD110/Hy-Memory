@@ -14,6 +14,7 @@ import {
   qwenCodeLayout,
   type RecallHostLayout,
   workbuddyLayout,
+  zcodeLayout,
 } from "@one-memory/host-bridge/installer";
 
 export interface RecallHostDescriptor {
@@ -48,6 +49,7 @@ export async function recallHosts(
   const claudeDir = path.join(home, ".claude");
   const codexDir = path.join(home, ".codex");
   const qoderDir = path.join(home, ".qoder-cn");
+  const zcodeDir = path.join(home, ".zcode");
   const workbuddyDir = path.join(home, ".workbuddy");
   // OpenCode splits config from data: the config lives under XDG, so its
   // presence is what says the host is set up here.
@@ -89,6 +91,12 @@ export async function recallHosts(
       label: "Qoder CN",
       layout: qoderLayout(qoderDir),
       presencePath: qoderDir,
+    },
+    {
+      hostId: "zcode",
+      label: "ZCode",
+      layout: zcodeLayout(zcodeDir),
+      presencePath: zcodeDir,
     },
     {
       hostId: "workbuddy",

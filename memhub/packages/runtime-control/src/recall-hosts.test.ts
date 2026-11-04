@@ -29,6 +29,23 @@ it("registers Qoder CN against its own home directory", async () => {
   expect(await isHostPresent(descriptor!)).toBe(true);
 });
 
+it("registers ZCode against its own home directory", async () => {
+  const root = path.join(tmpdir(), `recall-hosts-zcode-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  const descriptor = (await recallHosts(root, {})).find(
+    (host) => host.hostId === "zcode",
+  );
+  expect(descriptor).toMatchObject({
+    hostId: "zcode",
+    label: "ZCode",
+    presencePath: path.join(root, ".zcode"),
+    layout: { hostId: "zcode" },
+  });
+  expect(await isHostPresent(descriptor!)).toBe(false);
+  await mkdir(path.join(root, ".zcode"), { recursive: true });
+  expect(await isHostPresent(descriptor!)).toBe(true);
+});
+
 it("gives every DeepSeek Harness profile a matching unique layout identity", async () => {
   const root = path.join(tmpdir(), `recall-hosts-${process.pid}-${Date.now()}`);
   roots.push(root);

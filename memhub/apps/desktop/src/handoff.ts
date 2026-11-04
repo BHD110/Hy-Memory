@@ -24,6 +24,7 @@ export const HANDOFF_WITHOUT_PROMPT = new Set([
   "claude-code",
   "codex",
   "qoder",
+  "zcode",
   "opencode",
 ]);
 

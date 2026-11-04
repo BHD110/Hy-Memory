@@ -33,6 +33,7 @@ def test_catalog_resolves_defaults_and_marks_environment_overrides(tmp_path) -> 
         "claude-code",
         "codex",
         "qoder",
+        "zcode",
         "pi",
         "qwenwork",
         # Eleventh, not a rename of the tenth: the plan's list names Qwen Work,
@@ -45,6 +46,7 @@ def test_catalog_resolves_defaults_and_marks_environment_overrides(tmp_path) -> 
         "openclaw",
     }
     assert catalog["qwenwork"].candidate.path == tmp_path / "home/.qwenworkcn/projects"
+    assert catalog["zcode"].candidate.path == tmp_path / "home/.zcode"
     assert catalog["qwen-code"].candidate.path == tmp_path / "home/.qwen/projects"
     assert catalog["claude-code"].candidate.path == tmp_path / "home/.claude/projects"
     assert catalog["codex"].candidate.path == tmp_path / "custom-codex/sessions"

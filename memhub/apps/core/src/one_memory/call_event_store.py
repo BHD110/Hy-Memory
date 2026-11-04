@@ -41,6 +41,7 @@ HostId = Literal[
     "opencode",
     "qwen-code",
     "qoder",
+    "zcode",
     "hermes",
     "pi",
     "deepseek-harness",

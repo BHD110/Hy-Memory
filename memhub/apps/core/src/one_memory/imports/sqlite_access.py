@@ -21,6 +21,7 @@ def open_sqlite_readonly(
     source_file: AuthorizedSourceFile,
     *,
     timeout: float = 5.0,
+    mirror_wal: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     # Keep a no-follow descriptor open while SQLite uses the same validated path.
     # Percent-encode "%" so SQLite's URI parser cannot turn a literal filename
@@ -32,7 +33,13 @@ def open_sqlite_readonly(
         # Read the main file plus committed WAL bytes from a private mirror so
         # the host database and its shared-memory file stay byte-for-byte
         # untouched. A missing WAL is a normal single-file snapshot.
-        if os.path.lexists(wal):
+        #
+        # Callers reading a very large, live store (ZCode keeps a 200+ MB
+        # session database) pass mirror_wal=False: copying it once per import
+        # slice turns a row scan into minutes of disk I/O. Their connection is
+        # still query_only, and SQLite readers updating the host's -shm is the
+        # same thing the host's own readers do.
+        if mirror_wal and os.path.lexists(wal):
             with tempfile.TemporaryDirectory(prefix="one-memory-sqlite-read-") as directory:
                 mirror = Path(directory) / "store.db"
                 with mirror.open("wb") as target:

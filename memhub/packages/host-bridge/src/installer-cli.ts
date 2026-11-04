@@ -15,6 +15,7 @@ import {
   previewRecallInstall,
   qwenCodeLayout,
   qoderLayout,
+  zcodeLayout,
   type RecallHostLayout,
   refuseDisabledHostOperation,
   UnsafeManagedPathError,
@@ -34,6 +35,7 @@ const HOSTS = [
   "opencode",
   "qwen-code",
   "qoder",
+  "zcode",
   "openclaw",
   "hermes",
   "deepseek-harness",
@@ -201,6 +203,9 @@ function resolveLayout(values: Map<string, string>): RecallHostLayout {
   }
   if (host === "qoder") {
     return qoderLayout(hostDir);
+  }
+  if (host === "zcode") {
+    return zcodeLayout(hostDir);
   }
   if (host === "openclaw") {
     return openclawLayout(hostDir);

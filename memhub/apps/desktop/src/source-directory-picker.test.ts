@@ -50,7 +50,7 @@ function setup() {
 }
 
 describe("source directory picker", () => {
-  it.each(["workbuddy", "cursor", "claude-code", "codex", "qoder"])(
+  it.each(["workbuddy", "cursor", "claude-code", "codex", "qoder", "zcode"])(
     "opens only one parented directory dialog for %s and returns the exact path",
     async (sourceId) => {
       const f = setup();

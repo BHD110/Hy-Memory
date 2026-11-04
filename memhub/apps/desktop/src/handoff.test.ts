@@ -55,6 +55,7 @@ describe("handoffUrl", () => {
   it("接得上但填不进去的 app 单独列出来，不假装能填", () => {
     expect(HANDOFF_WITHOUT_PROMPT.has("workbuddy")).toBe(true);
     expect(HANDOFF_WITHOUT_PROMPT.has("qoder")).toBe(true);
+    expect(HANDOFF_WITHOUT_PROMPT.has("zcode")).toBe(true);
     expect(canHandOff("workbuddy")).toBe(false);
   });
 });

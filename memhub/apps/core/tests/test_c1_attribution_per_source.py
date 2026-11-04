@@ -157,7 +157,7 @@ def _jsonl_path(root: Path, source: str) -> Path:
 
 def _jsonl_sources() -> list[str]:
     catalog = build_source_catalog(home=Path.home(), environment={})
-    return sorted(source for source in catalog if source not in PAUSED | {"hermes", "opencode"})
+    return sorted(source for source in catalog if source not in PAUSED | {"hermes", "opencode", "zcode"})
 
 
 def _stored_rows(fixture: Source) -> list[dict]:

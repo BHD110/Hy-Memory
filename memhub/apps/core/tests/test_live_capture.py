@@ -1015,3 +1015,46 @@ def test_qoder_cn_hook_obeys_sync_and_grant_revocation(tmp_path) -> None:
     )
     assert not capture_hook("qoder", payload, database)
     assert store.count() == 0
+
+
+def test_zcode_hook_captures_prompt_and_reply_without_a_transcript(tmp_path) -> None:
+    store = _grant(tmp_path, "zcode", sync=True)
+    database = tmp_path / "one-memory.sqlite3"
+    session = "sess-zcode-hook"
+    assert capture_hook(
+        "zcode",
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "turnId": "turn-1",
+            "prompt": "以后都用中文回答",
+        },
+        database,
+    )
+    assert capture_hook(
+        "zcode",
+        {
+            "hook_event_name": "Stop",
+            "session_id": session,
+            "turnId": "turn-1",
+            "last_assistant_message": "好的，之后都用中文。",
+        },
+        database,
+    )
+    assert _rows(database) == [
+        ("以后都用中文回答", "person", None),
+        ("好的，之后都用中文。", "agent", None),
+    ]
+    assert store.count() == 2
+    # The same Stop payload twice does not file the reply again.
+    assert capture_hook(
+        "zcode",
+        {
+            "hook_event_name": "Stop",
+            "session_id": session,
+            "turnId": "turn-1",
+            "last_assistant_message": "好的，之后都用中文。",
+        },
+        database,
+    )
+    assert store.count() == 2

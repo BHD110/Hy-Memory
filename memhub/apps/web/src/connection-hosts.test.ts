@@ -9,4 +9,5 @@ it("treats claude and claude-code as the same insertion preference", () => {
 
 it("maps Qoder CN imports to the matching recall host", () => {
   expect(connectionHostId("qoder")).toBe("qoder");
+  expect(connectionHostId("zcode")).toBe("zcode");
 });

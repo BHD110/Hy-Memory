@@ -31,6 +31,7 @@ import type {
 
 it("maps Qoder CN source to its recall host", () => {
   expect(connectionHostId("qoder")).toBe("qoder");
+  expect(connectionHostId("zcode")).toBe("zcode");
 });
 
 const roots: string[] = [];

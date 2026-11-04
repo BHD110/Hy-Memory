@@ -22,6 +22,7 @@ import {
   captureCommandFor,
   captureFilePath,
   captureLeftovers,
+  cliHookRunnerName,
   inspectCapture,
   planCaptureFiles,
   type RemovalFinding,
@@ -234,6 +235,7 @@ export interface RecallHostLayout {
     | "dsh"
     | "opencode"
     | "openclaw"
+    | "zcode"
     | "codebuddy-plugin"
     | "none";
   /** Set for a host installed as a self-contained plugin rather than as an
@@ -685,6 +687,26 @@ export function qoderLayout(qoderDir: string): RecallHostLayout {
   };
 }
 
+/** ZCode keeps both MCP servers and hooks in `~/.zcode/cli/config.json`.
+ *
+ * Its MCP servers live one level deeper than Cursor's, under `mcp.servers`;
+ * hooks live beside that key and are disabled unless `hooks.enabled` is true.
+ * Skills are read from `~/.zcode/skills/<name>/SKILL.md`, and the same config
+ * is shared by the ZCode desktop app and CLI. */
+export function zcodeLayout(zcodeDir: string): RecallHostLayout {
+  const root = path.resolve(zcodeDir);
+  return {
+    hostId: "zcode",
+    hostLabel: "ZCode",
+    configPath: path.join(root, "cli", "config.json"),
+    format: "zcode",
+    channel: "mcp",
+    ...looseSkill(root),
+    journalPath: path.join(root, ".one-memory", "recall-install.json"),
+    containmentRoot: root,
+  };
+}
+
 /** OpenCode keeps its servers under `mcp` in `~/.config/opencode/opencode.json`.
  *
  * It has no Skill mechanism at all — no `skill` command, no skills directory —
@@ -828,8 +850,9 @@ export async function planRecallInstall(
   if (layout.hostId === "workbuddy" && normalized.recallCliPath !== undefined) {
     await assertWorkbuddyInjectionEntrypoints(normalized);
   }
-  if (layout.hostId === "qoder") {
-    if (!normalized.recallCliPath) throw new Error("Qoder CN needs recallCliPath for its hook");
+  if (layout.hostId === "qoder" || layout.hostId === "zcode") {
+    if (!normalized.recallCliPath)
+      throw new Error(`${layout.hostLabel} needs recallCliPath for its hook`);
     await assertWorkbuddyInjectionEntrypoints(normalized);
     await assertExecutableFile(resolveCaptureCommand(normalized), "captureCommand");
   }
@@ -1160,8 +1183,11 @@ export async function applyRecallInstall(
   }
   const originalMcp = files.mcp?.before ?? null;
   const originalSkill = files.skill?.before ?? null;
-  const previousQoderHooks = plan.layout.hostId === "qoder"
-    ? (await readJournalIfPresent(plan.paths.journal, plan.layout))?.capture_hooks ?? [] : [];
+  const previousCliHooks =
+    plan.layout.hostId === "qoder" || plan.layout.hostId === "zcode"
+      ? ((await readJournalIfPresent(plan.paths.journal, plan.layout))
+          ?.capture_hooks ?? [])
+      : [];
   const ledger = new MutationLedger();
   try {
     if (plan.paths.mcp !== null && files.mcp !== null) {
@@ -1309,11 +1335,11 @@ export async function applyRecallInstall(
             capture_hooks: files.captures.map((file) => ({
               path: file.path,
               command: file.command,
-              created: previousQoderHooks.find((prior) => prior.path === file.path)?.created ?? file.before === null,
+              created: previousCliHooks.find((prior) => prior.path === file.path)?.created ?? file.before === null,
               kind: file.kind,
               hash: hash(file.after),
-              previous: previousQoderHooks.some((prior) => prior.path === file.path)
-                ? previousQoderHooks.find((prior) => prior.path === file.path)!.previous : file.before,
+              previous: previousCliHooks.some((prior) => prior.path === file.path)
+                ? previousCliHooks.find((prior) => prior.path === file.path)!.previous : file.before,
             })),
           }),
     };
@@ -2063,18 +2089,27 @@ export async function verifyRecallInstall(
       );
     }
   }
-  if (layout.hostId === "qoder") {
+  if (layout.hostId === "qoder" || layout.hostId === "zcode") {
     const recorded = journal.capture_hooks ?? [];
     const runner = recorded.find((file) => file.kind === "owned");
     const settings = recorded.find((file) => file.kind === "merge");
-    if (!runner || !settings ||
-        runner.path !== path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs") ||
-        settings.path !== layout.configPath ||
-        hash((await readOptional(runner.path)) ?? "") !== runner.hash) {
-      throw new Error("MemHub Qoder CN hook verification failed");
+    if (
+      !runner ||
+      !settings ||
+      runner.path !==
+        path.join(
+          layout.containmentRoot,
+          ".one-memory",
+          cliHookRunnerName(layout.hostId),
+        ) ||
+      settings.path !== layout.configPath ||
+      hash((await readOptional(runner.path)) ?? "") !== runner.hash
+    ) {
+      throw new Error(`MemHub ${layout.hostLabel} hook verification failed`);
     }
     const capture = await inspectCapture(layout, settings.command, readOptional);
-    if (!capture.ours || capture.findings.length) throw new Error("MemHub Qoder CN hook verification failed");
+    if (!capture.ours || capture.findings.length)
+      throw new Error(`MemHub ${layout.hostLabel} hook verification failed`);
   }
   // For a CLI host the skill is the installed artifact, so the discovery path
   // it names is the one the host will actually use. Read back from the file
@@ -2739,7 +2774,8 @@ function readInstalledServer(
  */
 function serverPath(layout: RecallHostLayout): string[] {
   if (layout.format === "opencode") return ["mcp"];
-  if (layout.format === "openclaw") return ["mcp", "servers"];
+  if (layout.format === "openclaw" || layout.format === "zcode")
+    return ["mcp", "servers"];
   return ["mcpServers"];
 }
 
@@ -3930,8 +3966,15 @@ async function layoutManagedTargets(
   const capturePath = captureFilePath(layout);
   if (capturePath !== null)
     targets.push({ role: "capture", path: capturePath });
-  if (layout.hostId === "qoder")
-    targets.push({role: "capture", path: path.join(layout.containmentRoot, ".one-memory", "qoder-hook.cjs")});
+  if (layout.hostId === "qoder" || layout.hostId === "zcode")
+    targets.push({
+      role: "capture",
+      path: path.join(
+        layout.containmentRoot,
+        ".one-memory",
+        cliHookRunnerName(layout.hostId),
+      ),
+    });
   return targets;
 }
 

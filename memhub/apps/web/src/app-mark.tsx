@@ -3,6 +3,7 @@ const APP_ICON_BY_ID: ReadonlyArray<readonly [string, string]> = [
   ["claude-code", "claude"],
   ["qwen-code", "qwen"],
   ["qoder", "qoder"],
+  ["zcode", "zcode"],
   ["workbuddy", "workbuddy"],
   ["codebuddy", "codebuddy"],
   ["openclaw", "openclaw"],
