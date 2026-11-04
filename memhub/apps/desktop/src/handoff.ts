@@ -23,6 +23,7 @@ export const HANDOFF_WITHOUT_PROMPT = new Set([
   "workbuddy",
   "claude-code",
   "codex",
+  "qoder",
   "opencode",
 ]);
 

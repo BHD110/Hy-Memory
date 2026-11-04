@@ -467,9 +467,13 @@ def _sdk_answer_request(
             },
         }
     attach_disable_thinking(profile, payload)
+    from one_memory.opencode_compat import opencode_session_header
+
+    headers = {"Authorization": f"Bearer {secret}"} if secret else {}
+    headers.update(opencode_session_header(base_url))
     return (
         "POST",
         f"{base_url}/chat/completions",
-        {"Authorization": f"Bearer {secret}"} if secret else {},
+        headers,
         payload,
     )

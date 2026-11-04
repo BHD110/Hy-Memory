@@ -23,6 +23,7 @@ from one_memory.imports.jobs import ImportJobStore
 from one_memory.imports.manual_transcript import ManualTranscriptError
 from one_memory.imports.memory_content import parse_memory_content
 from one_memory.imports.models import EvidenceContentKind, WrittenBy
+from one_memory.windows_private_storage import private_directory, windows_private_storage
 
 
 class ImportPreviewMessage(BaseModel):
@@ -129,6 +130,9 @@ class _UploadOperation(BaseModel):
 
 
 def _sync_directory(directory: Path) -> None:
+    if os.name == "nt":
+        # File contents are flushed before atomic replacement; Windows cannot fsync a directory FD.
+        return
     descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
@@ -137,6 +141,8 @@ def _sync_directory(directory: Path) -> None:
 
 
 def _read_private_record(path: Path) -> bytes:
+    windows_private_storage(path)
+    before_path = path.lstat()
     descriptor = os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     )
@@ -145,7 +151,7 @@ def _read_private_record(path: Path) -> bytes:
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_nlink != 1
-            or info.st_mode & 0o077
+            or (os.name != "nt" and info.st_mode & 0o077)
             or (hasattr(os, "getuid") and info.st_uid != os.getuid())
             or info.st_size > 16_384
         ):
@@ -163,7 +169,9 @@ def _read_private_record(path: Path) -> bytes:
             or current.st_nlink != after.st_nlink
             or current.st_uid != after.st_uid
             or current.st_mtime_ns != after.st_mtime_ns
-            or current.st_ctime_ns != after.st_ctime_ns
+            or current.st_ctime_ns != (
+                before_path.st_ctime_ns if os.name == "nt" else after.st_ctime_ns
+            )
             or stat.S_ISLNK(current.st_mode)
         ):
             raise ValueError("changed_import_operation_file")
@@ -209,20 +217,22 @@ class FileImportStore:
     def _operation_directory(self, *, create: bool = False) -> Path:
         directory = self.root / "operations"
         if create:
-            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            private_directory(self.root, parents=True)
+        windows_private_storage(self.root)
         root_info = self.root.lstat()
         if (
             not stat.S_ISDIR(root_info.st_mode)
-            or root_info.st_mode & 0o022
+            or (os.name != "nt" and root_info.st_mode & 0o022)
             or (hasattr(os, "getuid") and root_info.st_uid != os.getuid())
         ):
             raise ValueError("invalid_import_store_directory")
         if create:
-            directory.mkdir(exist_ok=True, mode=0o700)
+            private_directory(directory)
+        windows_private_storage(directory)
         info = directory.lstat()
         if (
             not stat.S_ISDIR(info.st_mode)
-            or info.st_mode & 0o077
+            or (os.name != "nt" and info.st_mode & 0o077)
             or (hasattr(os, "getuid") and info.st_uid != os.getuid())
         ):
             raise ValueError("invalid_import_operation_directory")
@@ -252,10 +262,11 @@ class FileImportStore:
         upload_id = UUID(record.upload_id)
         try:
             directory = self.root / "staging" / record.upload_id
+            windows_private_storage(directory)
             info = directory.lstat()
             if (
                 not stat.S_ISDIR(info.st_mode)
-                or info.st_mode & 0o077
+                or (os.name != "nt" and info.st_mode & 0o077)
                 or (hasattr(os, "getuid") and info.st_uid != os.getuid())
             ):
                 raise ValueError("invalid_upload_directory")
@@ -273,10 +284,11 @@ class FileImportStore:
                 raise ValueError("import_upload_identity_mismatch")
             upload_state = "committed" if receipt.committed else "staged"
             for name in ("original", "messages.jsonl"):
+                windows_private_storage(directory / name)
                 info = (directory / name).lstat()
                 if (
                     not stat.S_ISREG(info.st_mode)
-                    or info.st_mode & 0o077
+                    or (os.name != "nt" and info.st_mode & 0o077)
                     or (hasattr(os, "getuid") and info.st_uid != os.getuid())
                 ):
                     raise ValueError("invalid_upload_file")
@@ -392,17 +404,18 @@ class FileImportStore:
         upload_id = upload_id or uuid4()
         directory = self.root / "staging" / str(upload_id)
         if durable:
-            directory.parent.mkdir(exist_ok=True, mode=0o700)
+            private_directory(directory.parent)
             info = directory.parent.lstat()
             # Legacy uploads create this container under the caller's umask.
             # Read/traverse bits are compatible; writable parents are not.
             if (
                 not stat.S_ISDIR(info.st_mode)
-                or info.st_mode & 0o022
+                or (os.name != "nt" and info.st_mode & 0o022)
                 or (hasattr(os, "getuid") and info.st_uid != os.getuid())
             ):
                 raise ValueError("invalid_import_staging_directory")
         directory.mkdir(parents=True, mode=0o700)
+        windows_private_storage(directory, initialize=True)
         checksum = hashlib.sha256(payload).hexdigest()
         receipt = FileImportReceipt(
             upload_id=upload_id,
@@ -456,7 +469,7 @@ class FileImportStore:
             for file in directory.iterdir():
                 file.chmod(0o600)
                 if durable:
-                    with file.open("rb") as staged:
+                    with file.open("r+b" if os.name == "nt" else "rb") as staged:
                         os.fsync(staged.fileno())
             if durable:
                 _sync_directory(directory)

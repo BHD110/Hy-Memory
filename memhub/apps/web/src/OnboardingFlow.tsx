@@ -14,6 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 import { completeOnboarding } from "./api";
 import { AppMark } from "./app-mark";
@@ -1188,9 +1189,7 @@ function CustomLocationDialog({
     const element = panel.current;
     if (!element) return;
     const before = document.activeElement;
-    const fallbackFocus = element
-      .closest(".onboarding-r6")
-      ?.querySelector<HTMLElement>("#cold-start-phase");
+    const fallbackFocus = document.getElementById("cold-start-phase");
     const siblings = new Map<HTMLElement, boolean>();
     let branch = element.parentElement ?? element;
     while (branch.parentElement) {
@@ -1254,8 +1253,8 @@ function CustomLocationDialog({
     };
   }, [onCancel]);
 
-  return (
-    <div className="cold-start-cover">
+  return createPortal(
+    <div className="cold-start cold-start-cover">
       <div
         ref={panel}
         className="cold-start-dialog"
@@ -1316,6 +1315,7 @@ function CustomLocationDialog({
           </button>
         </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

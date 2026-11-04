@@ -34,6 +34,7 @@ Two families, because the sources genuinely differ:
 """
 
 import hashlib
+import ntpath
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ PATH_WORKSPACE_SOURCES = (
     "pi",
     "qwen-work",
     "qwen-code",
+    "qoder",
     "workbuddy",
 )
 
@@ -116,13 +118,18 @@ def resolve_workspace_scopes(
 
 def _normalize(workspace_path: str) -> str | None:
     # This value is an opaque identity that is hashed below, never a filesystem
-    # operation. Accept only an already-absolute POSIX path; do not expand `~`,
+    # operation. Accept already-absolute POSIX and Windows paths; do not expand `~`,
     # resolve symlinks, stat, open, or join caller-controlled path components.
     if (
-        not workspace_path.startswith("/")
-        or len(workspace_path) > 4_096
+        len(workspace_path) > 4_096
         or any(ord(character) < 32 for character in workspace_path)
     ):
+        return None
+    drive, tail = ntpath.splitdrive(workspace_path)
+    windows_absolute = bool(drive) and (
+        tail.startswith(("\\", "/")) or (drive.startswith("\\\\") and not tail)
+    )
+    if not workspace_path.startswith("/") and not windows_absolute:
         return None
     return workspace_path
 

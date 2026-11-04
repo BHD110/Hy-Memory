@@ -10,6 +10,7 @@ import {
   openclawLayout,
   opencodeLayout,
   piLayout,
+  qoderLayout,
   qwenCodeLayout,
   type RecallHostLayout,
   workbuddyLayout,
@@ -46,6 +47,7 @@ export async function recallHosts(
   const cursorDir = path.join(home, ".cursor");
   const claudeDir = path.join(home, ".claude");
   const codexDir = path.join(home, ".codex");
+  const qoderDir = path.join(home, ".qoder-cn");
   const workbuddyDir = path.join(home, ".workbuddy");
   // OpenCode splits config from data: the config lives under XDG, so its
   // presence is what says the host is set up here.
@@ -81,6 +83,12 @@ export async function recallHosts(
       label: "Codex",
       layout: codexLayout(codexDir),
       presencePath: codexDir,
+    },
+    {
+      hostId: "qoder",
+      label: "Qoder CN",
+      layout: qoderLayout(qoderDir),
+      presencePath: qoderDir,
     },
     {
       hostId: "workbuddy",

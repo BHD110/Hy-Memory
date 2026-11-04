@@ -3,19 +3,78 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from one_memory.background_work import in_sdk_write
 from one_memory.hy_sdk_runtime import SdkClientHandle
 from one_memory.imports.models import EvidenceContentKind, EvidenceOrigin, EvidenceRecord
 from one_memory.input_sanitization import sanitize_model_input
 from one_memory.model_profiles import ModelProfileSnapshot, ModelProfileStore
+from one_memory.model_request_audit import audit_precipitation_request
 from one_memory.secrets import SecretStore, SecretStoreUnavailableError
 
 PRODUCT_AGENT_ID = "all-apps"
+
+#: SDK request ids whose write call is running on a thread right now. A write
+#: the drain gave up on (its work ceiling, a lost lease) keeps running on its
+#: thread; it must not be re-run beside itself (`recover_unknown`).
+_IN_FLIGHT: set[str] = set()
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def sdk_write_in_flight(request_id: str) -> bool:
+    with _IN_FLIGHT_LOCK:
+        return request_id in _IN_FLIGHT
+
+
+class _Tracked:
+    """One SDK write call, held in `_IN_FLIGHT` from submission until it ends.
+
+    If the wait for it is cancelled before a thread picked it up, it is
+    abandoned: it will not start, and it leaves `_IN_FLIGHT` at once.
+    """
+
+    def __init__(self, request_id: str, work: Callable[..., Any]) -> None:
+        self.request_id = request_id
+        self.work = work
+        self.started = False
+        self.abandoned = False
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT.add(request_id)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        with _IN_FLIGHT_LOCK:
+            if self.abandoned:
+                raise RuntimeError("hy_memory_write_abandoned")
+            self.started = True
+        try:
+            return self.work(*args, **kwargs)
+        finally:
+            with _IN_FLIGHT_LOCK:
+                _IN_FLIGHT.discard(self.request_id)
+
+    def abandon(self) -> None:
+        with _IN_FLIGHT_LOCK:
+            if not self.started:
+                self.abandoned = True
+                _IN_FLIGHT.discard(self.request_id)
+
+
+async def _write(tracked_id: str, work: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    call = _Tracked(tracked_id, work)
+    try:
+        return await in_sdk_write(call, *args, **kwargs)
+    except asyncio.CancelledError:
+        call.abandon()
+        raise
+
+
 _MESSAGE_ROLES = frozenset({"user", "assistant", "tool"})
 _CONVERSATION_ROLES = frozenset({"user", "assistant"})
 
@@ -67,7 +126,8 @@ class SdkWriteProcessor:
         if extracted:
             contents = [sanitize_model_input(record.verbatim) for record in records]
             await before_hy_invocation()
-            result = await asyncio.to_thread(
+            result = await _write(
+                request_id,
                 client.add_extracted,
                 contents,
                 user_id=scope.user_id,
@@ -91,7 +151,8 @@ class SdkWriteProcessor:
             if not messages:
                 raise RuntimeError("hy_memory_task_without_inputs")
             await before_hy_invocation()
-            result = await asyncio.to_thread(
+            result = await _write(
+                request_id,
                 client.add,
                 messages,
                 user_id=scope.user_id,
@@ -112,7 +173,7 @@ class SdkWriteProcessor:
         if not request_id:
             raise ValueError("request_id is required")
         client = await self._client_handle.client()
-        outcome = await asyncio.to_thread(client.get_write_outcome, request_id)
+        outcome = await in_sdk_write(client.get_write_outcome, request_id)
         if outcome is None:
             return None
         if not isinstance(outcome, Mapping):
@@ -169,12 +230,13 @@ class SdkWriteCoordinator:
     ) -> SdkWriteReceipt:
         if not self.sedimentation_enabled():
             raise RuntimeError("model_sedimentation_disabled")
-        async with self._active_handle() as handle:
-            return await SdkWriteProcessor(handle).process_sdk_job(
-                records,
-                request_id=request_id,
-                before_hy_invocation=before_hy_invocation,
-            )
+        with audit_precipitation_request(request_id):
+            async with self._active_handle() as handle:
+                return await SdkWriteProcessor(handle).process_sdk_job(
+                    records,
+                    request_id=request_id,
+                    before_hy_invocation=before_hy_invocation,
+                )
 
     async def inquire_write_outcome(
         self, request_id: str
@@ -321,11 +383,36 @@ def _is_extracted_content(record: EvidenceRecord) -> bool:
     )
 
 
+#: The SDK's stable failure codes are upper snake case (`RECONCILE_FAILED`).
+_SDK_FAILURE_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,47}")
+
+
+def sdk_write_failure_code(value: Mapping[object, object]) -> str:
+    """The job's `error_code` for a failed SDK write: the SDK's own cause if it gave one.
+
+    hy-memory 2.0.13 names why a write failed: `agent_error_code`
+    (`LLM_ERROR`, `EMPTY_RESPONSE`, `JSON_PARSE_FAILED`, `EMBEDDING_FAILED`,
+    `RECONCILE_FAILED`) and, for a failed reconcile, `reconcile_error_code`
+    (`LLM_UNAVAILABLE`, `EMPTY_RESPONSE`, `JSON_PARSE_FAILED`,
+    `RECONCILE_EXCEPTION`). They become `hy_sdk_reconcile_empty_response`,
+    `hy_sdk_llm_error`, ... Without a recognisable code it stays
+    `hy_sdk_write_failed`. Only the code is kept, never the SDK's message.
+    """
+    reconcile = value.get("reconcile_error_code")
+    if isinstance(reconcile, str) and _SDK_FAILURE_CODE.fullmatch(reconcile):
+        cause = reconcile.removeprefix("RECONCILE_") or "FAILED"
+        return f"hy_sdk_reconcile_{cause.lower()}"
+    agent = value.get("agent_error_code")
+    if isinstance(agent, str) and _SDK_FAILURE_CODE.fullmatch(agent):
+        return f"hy_sdk_{agent.lower()}"
+    return "hy_sdk_write_failed"
+
+
 def _receipt_from_result(value: object) -> SdkWriteReceipt:
     if not isinstance(value, Mapping):
         raise RuntimeError("hy_sdk_write_receipt_shape_invalid")
     if value.get("success") is not True:
-        raise RuntimeError("hy_sdk_write_failed")
+        raise RuntimeError(sdk_write_failure_code(value))
 
     # Read only documented public receipt fields. ``variant`` identifies the
     # productivity namespace; IDs from both variants are canonical memory IDs.

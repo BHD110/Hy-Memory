@@ -35,6 +35,16 @@ function source(): SourceResponse {
 }
 
 describe("connectionSourceMetadata", () => {
+  it("accepts Qoder CN as a source with the shared metadata shape", () => {
+    const qoder = {
+      ...source(),
+      source_id: "qoder",
+      display_name: "Qoder CN",
+      candidate_path: "/fixture/.qoder-cn",
+    };
+    expect(connectionSourceMetadata([qoder])).toStrictEqual([qoder]);
+  });
+
   it("projects exactly the existing metadata contract without arbitrary response keys", () => {
     const expected = source();
     const input = {

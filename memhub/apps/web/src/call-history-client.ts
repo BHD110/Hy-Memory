@@ -57,6 +57,7 @@ export interface CallHistoryPage {
 export const CALL_HOSTS: Record<string, string> = {
   cursor: "Cursor",
   codex: "Codex",
+  qoder: "Qoder CN",
   "claude-code": "Claude Code",
   workbuddy: "WorkBuddy",
   opencode: "OpenCode",

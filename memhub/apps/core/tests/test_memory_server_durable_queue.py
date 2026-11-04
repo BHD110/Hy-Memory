@@ -4376,6 +4376,71 @@ def test_a_failing_renewal_does_not_kill_the_drain(tmp_path) -> None:
     assert queue.get("idem-1").state == COMPLETED
 
 
+def test_a_locked_fallback_settlement_does_not_kill_the_drain(tmp_path, monkeypatch) -> None:
+    """The incident shape: executor and its fallback both lose the writer.
+
+    The first row keeps its lease for normal reclaim; an unrelated row must
+    still run instead of being stranded behind a dead drain task.
+    """
+    queue = DurableWriteQueue(tmp_path / "one-memory.sqlite3")
+    first = queue.submit(_request(key="first", source="cursor"))
+    second = queue.submit(_request(key="second", source="codex"))
+    executed: list[str] = []
+
+    async def execute(job_id: str) -> None:
+        executed.append(job_id)
+        if job_id == first.job_id:
+            raise RuntimeError("executor failed")
+        queue.settle(job_id, state=COMPLETED)
+        drain.stop()
+
+    drain = DurableWriteDrain(queue, execute=execute, max_concurrent_sources=1)
+
+    def locked_settlement(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(queue, "settle_worker_error", locked_settlement)
+
+    asyncio.run(asyncio.wait_for(drain.run_forever(idle_pause=0.005), 1))
+
+    assert executed == [first.job_id, second.job_id]
+    assert queue.get("first").state == RUNNING
+    assert queue.get("second").state == COMPLETED
+
+
+def test_an_unexpected_job_task_failure_is_contained_by_the_drain(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    """A programming error stays visible without taking down the consumer."""
+    queue = DurableWriteQueue(tmp_path / "one-memory.sqlite3")
+    first = queue.submit(_request(key="first", source="cursor"))
+    second = queue.submit(_request(key="second", source="codex"))
+    executed: list[str] = []
+
+    async def run_job(job_id: str) -> None:
+        executed.append(job_id)
+        if job_id == first.job_id:
+            raise RuntimeError("unexpected job task failure")
+        drain.stop()
+
+    drain = DurableWriteDrain(
+        queue,
+        execute=_never_execute,
+        max_concurrent_sources=1,
+    )
+    monkeypatch.setattr(drain, "_run_claimed_job", run_job)
+
+    with caplog.at_level(logging.ERROR, logger="one_memory.memory_server.durable_queue"):
+        asyncio.run(asyncio.wait_for(drain.run_forever(idle_pause=0.005), 1))
+
+    assert executed == [first.job_id, second.job_id]
+    assert any(
+        "durable_write_drain_job_task_failed" in message.getMessage()
+        and "error_type=RuntimeError" in message.getMessage()
+        for message in caplog.records
+    )
+
+
 @pytest.mark.parametrize("terminal", [COMPLETED, FAILED, DEAD])
 def test_a_terminal_row_is_sticky_against_a_late_settle(tmp_path, terminal: str) -> None:
     """A late settle must not overwrite an outcome that already happened.
@@ -5218,6 +5283,27 @@ def test_permanent_renewal_error_stops_the_worker(tmp_path, monkeypatch) -> None
         asyncio.run(drain.run_one())
 
 
+def test_permanent_renewal_error_stops_the_long_lived_drain(tmp_path, monkeypatch) -> None:
+    queue = DurableWriteQueue(tmp_path / "one-memory.sqlite3")
+    queue.submit(_request())
+    drain = DurableWriteDrain(
+        queue,
+        execute=lambda _job_id: asyncio.sleep(0.03),
+        lease=timedelta(seconds=1),
+        renew_every=timedelta(milliseconds=10),
+    )
+    monkeypatch.setattr(
+        drain,
+        "renew",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database schema is corrupt")
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(asyncio.wait_for(drain.run_forever(idle_pause=0.005), 1))
+
+
 def test_lost_renewal_waits_for_execution_before_releasing_source(tmp_path, monkeypatch) -> None:
     path = tmp_path / "one-memory.sqlite3"
     queue = DurableWriteQueue(path)
@@ -5667,3 +5753,153 @@ def test_hand_added_memories_still_run_one_at_a_time_in_order(tmp_path) -> None:
     assert drain.claim(limit=5) == ()
     assert queue.get("note-2").state == PENDING
     assert second.job_id
+
+
+def test_a_job_the_execute_gate_releases_is_not_reclaimed_while_it_still_refuses(
+    tmp_path,
+) -> None:
+    """The claim gate and the execute gate can disagree for good (#245).
+
+    The claim asks about the lane's user, the execute gate about the user of
+    the job's Evidence. An id-only pre-upgrade payload sits in the `local`
+    lane even when its Evidence belongs to someone else: while that user
+    evolves, the claim admits the job and the execute gate hands it back.
+    Released with no hold, the very next tick claimed it again, in a loop.
+    """
+    path = tmp_path / "one-memory.sqlite3"
+    queue = DurableWriteQueue(path)
+    record = queue.submit(_request(key="evolving-user", source="cursor"))
+    drain = DurableWriteDrain(queue, execute=_never_execute, owner="gate-owner")
+    assert drain.claim(limit=1) == (record.job_id,)
+
+    asyncio.run(
+        execute_job(
+            record.job_id,
+            queue=queue,
+            supervisor=_Recorder(error=RuntimeError("memory_evolve_in_progress")),
+            evidence=_EvidenceStore({"e1"}),
+            owner="gate-owner",
+        )
+    )
+
+    assert queue.get(record.request_id).state == PENDING
+    now = datetime.now(UTC)
+    assert drain.claim(limit=1, now=now) == ()
+    assert drain.claim(limit=1, now=now + timedelta(seconds=4)) == ()
+    assert drain.claim(limit=1, now=now + timedelta(seconds=6)) == (record.job_id,)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT attempts,hy_invoked FROM memory_write_jobs WHERE job_id=?",
+            (record.job_id,),
+        ).fetchone() == (1, 0)
+
+
+def _suspension_runtime(queue: DurableWriteQueue, enabled: set[str]):
+    from one_memory.sdk_memory_runtime import SdkMemoryRuntime
+
+    return SdkMemoryRuntime(
+        coordinator=SimpleNamespace(),
+        read_handle=SimpleNamespace(),  # type: ignore[arg-type]
+        write_queue=queue,
+        extraction_settings=SimpleNamespace(),  # type: ignore[arg-type]
+        data_dir=queue.database_path.parent,
+        source_active=lambda source_key: source_key in enabled,
+    )
+
+
+def test_a_disabled_source_suspends_its_jobs_and_enabling_it_resumes_them(tmp_path) -> None:
+    """A source the user turned off keeps its jobs, out of the pending count (#245)."""
+    path = tmp_path / "one-memory.sqlite3"
+    queue = DurableWriteQueue(path)
+    recent = datetime.now(UTC)
+    for index in range(3):
+        queue.submit(_request(key=f"cursor-{index}", source="cursor", event_at=recent))
+    codex = queue.submit(_request(key="codex-0", source="codex", event_at=recent))
+    enabled = {"cursor", "codex"}
+    runtime = _suspension_runtime(queue, enabled)
+    drain = DurableWriteDrain(
+        queue,
+        execute=_never_execute,
+        owner="suspend-owner",
+        source_writes_permitted=lambda source_key: source_key in enabled,
+    )
+
+    assert runtime.status_counts() == {PENDING: 4}
+    assert runtime.queue_depths().fresh == 4
+
+    enabled.discard("cursor")
+
+    assert runtime.status_counts() == {PENDING: 1, "suspended": 3}
+    assert runtime.queue_depths().fresh == 1
+    assert drain.claim(limit=10) == (codex.job_id,)
+    queue.settle(codex.job_id, state=COMPLETED, hy_invoked=True, owner="suspend-owner")
+    assert drain.claim(limit=10) == ()
+    assert runtime.status_counts() == {COMPLETED: 1, "suspended": 3}
+    # Nothing was cancelled, moved or deleted: the rows are as they were.
+    assert [row["state"] for row in _rows(path) if row["source_key"] == "cursor"] == [PENDING] * 3
+
+    enabled.add("cursor")
+
+    assert runtime.status_counts() == {PENDING: 3, COMPLETED: 1}
+    assert runtime.queue_depths().fresh == 3
+    assert len(drain.claim(limit=10)) == 1
+
+
+def test_confirmed_unknown_retry_requeues_off_the_event_loop(tmp_path) -> None:
+    """Up to 2048 write transactions must not run on the loop /health shares (#162)."""
+    from httpx import ASGITransport, AsyncClient
+    from pydantic import SecretStr
+
+    from one_memory.api import create_app
+    from one_memory.config import Settings
+    from one_memory.secrets import InMemorySecretStore
+
+    threads: list[str] = []
+
+    async def scenario() -> dict[str, object]:
+        app = create_app(
+            Settings(
+                data_dir=tmp_path / "data",
+                source_home=tmp_path,
+                api_token=SecretStr("retry-token"),
+                imports_enabled=False,
+                automatic_memory_processing=False,
+                live_sync_enabled=False,
+            ),
+            secret_store=InMemorySecretStore(),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": "Bearer retry-token"},
+            ) as client,
+        ):
+            queue = app.state.memory_write_queue
+            loop_thread = threading.current_thread().name
+
+            async def nothing_to_reconcile(**_kwargs) -> int:
+                return 0
+
+            def unknown_jobs(**_kwargs):
+                threads.append(threading.current_thread().name)
+                return (SimpleNamespace(job_id="j1"), SimpleNamespace(job_id="j2"))
+
+            def retry(_job_id: str) -> bool:
+                threads.append(threading.current_thread().name)
+                return True
+
+            app.state.sdk_memory_runtime.reconcile_unknown_outputs = nothing_to_reconcile
+            queue.unknown_jobs = unknown_jobs
+            queue.retry_unknown_confirmed = retry
+            response = await client.post(
+                "/api/v1/memory-processing/retry-unknown", json={"confirm": True}
+            )
+            assert response.status_code == 200, response.text
+            assert threads and loop_thread not in threads
+            return response.json()
+
+    assert asyncio.run(scenario())["requeued"] == 2
+    # The listing and both requeues ran in the background pool.
+    assert all(name.startswith("one-memory-bulk") for name in threads[:3])

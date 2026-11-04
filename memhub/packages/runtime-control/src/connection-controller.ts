@@ -569,8 +569,8 @@ export class ConnectionController {
           !stat.isFile() ||
           stat.nlink !== 1 ||
           stat.size > 512 * 1024 ||
-          (stat.mode & 0o777) !== 0o600 ||
-          stat.uid !== process.getuid?.()
+          (process.platform !== "win32" &&
+            ((stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()))
         )
           fail("recovery_required");
         const buffer = Buffer.alloc(512 * 1024 + 1);

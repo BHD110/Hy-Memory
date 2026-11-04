@@ -24,6 +24,7 @@ const prioritySources = new Set([
   "cursor",
   "claude-code",
   "codex",
+  "qoder",
 ]);
 const changedMessage =
   "来源位置或候选版本已变化，请取消后重新选择目录。旧确认不会用于变化后的来源。";

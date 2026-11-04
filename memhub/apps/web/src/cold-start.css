@@ -1051,7 +1051,8 @@
   color: var(--cold-secondary);
 }
 
-.cold-start .cold-start-cover {
+.cold-start.cold-start-cover {
+  background: transparent;
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -1060,7 +1061,7 @@
   padding: 24px;
 }
 
-.cold-start .cold-start-cover::before {
+.cold-start.cold-start-cover::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -1300,7 +1301,7 @@
   .cold-start .cold-start-actions > button {
     flex: 1 1 140px;
   }
-  .cold-start .cold-start-cover {
+  .cold-start.cold-start-cover {
     padding: 16px;
   }
 }
@@ -1354,7 +1355,7 @@ html[data-learning-rt="true"]
 
 @media (prefers-reduced-motion: reduce) {
   .cold-start .cold-start-dialog,
-  .cold-start .cold-start-cover::before {
+  .cold-start.cold-start-cover::before {
     animation: none;
   }
   .cold-start button {

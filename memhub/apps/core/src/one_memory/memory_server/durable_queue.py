@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import time as _time
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,7 +32,7 @@ from one_memory.background_work import in_the_background
 from one_memory.conversation_processing import TURN_IDLE_FLUSH_SECONDS, turn_batches
 from one_memory.database_access import main_database
 from one_memory.diagnostic_log import diagnostic_event
-from one_memory.imports.models import EvidenceOrigin, EvidenceRecord
+from one_memory.imports.models import EvidenceContentKind, EvidenceOrigin, EvidenceRecord
 from one_memory.imports.storage import EvidenceStore
 from one_memory.memory_server.contracts import (
     BatchIdentity,
@@ -52,6 +53,7 @@ from one_memory.memory_tasks import (
 from one_memory.memory_tasks import (
     POLICY_STOPPED_CODES as _TASK_POLICY_STOPPED_CODES,
 )
+from one_memory.model_backoff import ModelAttempt
 from one_memory.sdk_migration_log import error_chain_text
 from one_memory.service_levels import ServiceLevel, service_level_context
 
@@ -105,6 +107,43 @@ PARKED_STATES = (WAITING_FOR_PERMISSION, WAITING_FOR_MODEL)
 #: `waiting_for_permission` (which needs a grant change to matter) this one is
 #: re-admitted on a timer. The gap keeps a still-down model from spinning.
 DEFAULT_MODEL_READMIT_AFTER = timedelta(minutes=1)
+
+#: How long a job the execute gate handed back (`release_unstarted`) is left
+#: alone before it can be claimed again.
+RELEASE_HOLD = timedelta(seconds=5)
+
+#: Automatic retries of a job whose attempt failed for a reason other than the
+#: model provider: content the model or the SDK refused, a parse error, a
+#: crash or an interruption mid-write. After the last one the job is `failed`,
+#: shown with its code, and the queue moves on. A provider failure (a broken
+#: key, a model that is gone, a provider that is down) never counts: the job
+#: waits in `pending` for as long as the provider is broken, paced by
+#: `model_backoff`.
+JOB_RETRY_LIMIT = 3
+JOB_RETRY_FIRST_BACKOFF = timedelta(seconds=30)
+JOB_RETRY_BACKOFF_CAP = timedelta(minutes=3)
+
+#: The code a job interrupted mid-write carries when it has no better one.
+INTERRUPTED_ERROR_CODE = "durable_write_interrupted"
+
+
+def job_retry_backoff(retry: int) -> timedelta:
+    """The wait before automatic retry number `retry` (1-based)."""
+    wait: timedelta = JOB_RETRY_FIRST_BACKOFF * (2 ** min(max(retry - 1, 0), 16))
+    return min(wait, JOB_RETRY_BACKOFF_CAP)
+
+
+def sdk_request_id(idempotency_key: str, attempt: int) -> str:
+    """The SDK request id of a job's `attempt`-th write.
+
+    The SDK keeps one outcome per request id and replays it: a write that
+    failed under an id fails under it forever, without calling the model.
+    Every re-run therefore gets an id of its own. Attempt 0 is the job's own
+    key, so every job written before this existed keeps the id its outcome
+    was recorded under.
+    """
+    return idempotency_key if attempt <= 0 else f"{idempotency_key}#r{attempt}"
+
 
 #: Production drain-budget defaults. These are the single source consumed by
 #: the composition root; callers must not invent a second formula or copy a
@@ -331,6 +370,9 @@ LEGACY_MEMORY_WRITE_JOB_COLUMNS = (
     ("last_error", "TEXT"),
     ("event_at", "TEXT"),
     ("time_quality", "TEXT NOT NULL DEFAULT 'approximate'"),
+    ("sdk_request_id", "TEXT"),
+    ("sdk_attempt", "INTEGER NOT NULL DEFAULT 0"),
+    ("retries", "INTEGER NOT NULL DEFAULT 0"),
     ("sdk_raw_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("sdk_memory_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
 )
@@ -356,6 +398,10 @@ class DurableWriteRecord:
     detail: str = ""
     sdk_raw_ids: tuple[str, ...] = ()
     sdk_memory_ids: tuple[str, ...] = ()
+    #: The stable code of the last failure, if the row carries one.
+    error_code: str | None = None
+    #: When a waiting row may next be claimed, if a retry wait holds it.
+    retry_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -721,10 +767,10 @@ class DurableWriteQueue:
         """Recover expired leases on the only engine D56 permits.
 
         A lease whose owner died before HY was invoked is safe to retry. Once
-        `hy_invoked` is recorded, the outcome may already exist in HY and its
-        requests have no idempotency key, so that row becomes `unknown`
-        instead of `pending`. Unknown is intentionally sticky: a later reclaim
-        pass cannot turn it back into retryable work.
+        `hy_invoked` is recorded the write may already have landed, so that
+        row becomes `unknown` instead of `pending`. `unknown` is only a stop
+        on the way: `recover_unknown` re-runs it under a new SDK request id,
+        after asking the SDK whether the old one succeeded.
         """
         now = datetime.now(UTC).isoformat()
         changed = 0
@@ -938,6 +984,15 @@ class DurableWriteQueue:
         if written is not None:
             # A re-read of a record a job already holds: staging it again
             # would regroup it with later turns into a second job.
+            return
+        if record.content_kind is EvidenceContentKind.MEMORY_CONTENT:
+            # An explicit memory has no user/assistant turn. Sending it through
+            # conversation assembly drops it at EOF as an orphan assistant.
+            # Keep it as a standalone SDK add_extracted job, with the same
+            # durable identity and re-import deduplication as conversation jobs.
+            self._insert_turn_batch(
+                connection, (record,), priority="live" if priority == "live" else "normal"
+            )
             return
         row = connection.execute(
             "SELECT job_id,payload_json,priority FROM memory_write_jobs "
@@ -1479,13 +1534,15 @@ class DurableWriteQueue:
         with main_database(self.database_path).read(row_factory=sqlite3.Row) as connection:
             _require_queue_schema(connection)
             row = connection.execute(
-                "SELECT job_id, state, created_at, updated_at, last_error, "
+                "SELECT job_id, state, created_at, updated_at, last_error, lease_expires_at, "
                 "sdk_raw_ids_json,sdk_memory_ids_json "
                 "FROM memory_write_jobs WHERE idempotency_key=?",
                 (request_id,),
             ).fetchone()
         if row is None:
             return None
+        last_error = str(row["last_error"] or "")
+        retry_at = row["lease_expires_at"]
         return DurableWriteRecord(
             job_id=str(row["job_id"]),
             request_id=request_id,
@@ -1496,6 +1553,14 @@ class DurableWriteQueue:
             detail=str(row["last_error"] or ""),
             sdk_raw_ids=tuple(json.loads(str(row["sdk_raw_ids_json"]))),
             sdk_memory_ids=tuple(json.loads(str(row["sdk_memory_ids_json"]))),
+            error_code=last_error if _ERROR_CODE.fullmatch(last_error) else None,
+            retry_at=(
+                str(retry_at)
+                if str(row["state"]) == PENDING
+                and retry_at is not None
+                and str(retry_at) > datetime.now(UTC).isoformat()
+                else None
+            ),
         )
 
     def payload_for(self, job_id: str) -> WriteRequest | None:
@@ -1696,9 +1761,23 @@ class DurableWriteQueue:
                 )
         return updated.rowcount == 1
 
-    def release_unstarted(self, job_id: str, *, owner: str | None = None) -> bool:
-        """Return a claimed job to pending when its source was paused pre-HY."""
-        now = datetime.now(UTC).isoformat()
+    def release_unstarted(
+        self,
+        job_id: str,
+        *,
+        owner: str | None = None,
+        hold: timedelta = RELEASE_HOLD,
+    ) -> bool:
+        """Return a claimed job to pending when its source was paused pre-HY.
+
+        The row comes back with its lease still set `hold` into the future.
+        Claim only takes a pending row whose lease has expired, so a job the
+        execute gate just refused is not claimed again on the very next tick:
+        when the claim gate and the execute gate disagree for good (a
+        pre-upgrade payload whose Evidence belongs to another user than its
+        lane), the job is retried every few seconds instead of in a tight loop.
+        """
+        now = datetime.now(UTC)
         where = "job_id=? AND state=? AND hy_invoked=0"
         params: tuple[Any, ...] = (job_id, RUNNING)
         if owner is not None:
@@ -1708,10 +1787,177 @@ class DurableWriteQueue:
             updated = connection.execute(
                 "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,"
                 "attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,"
-                "lease_expires_at=NULL,updated_at=? WHERE " + where,
-                (PENDING, now, *params),
+                "lease_expires_at=?,updated_at=? WHERE " + where,
+                (PENDING, (now + hold).isoformat(), now.isoformat(), *params),
             )
         return updated.rowcount == 1
+
+    def sdk_attempt(self, job_id: str) -> int:
+        """Which SDK request id this job's next write uses (`sdk_request_id`)."""
+        with main_database(self.database_path).read() as connection:
+            row = connection.execute(
+                "SELECT sdk_attempt FROM memory_write_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def requeue_for_model(
+        self,
+        job_id: str,
+        *,
+        error_code: str,
+        owner: str | None = None,
+    ) -> bool:
+        """Put a job the model provider failed back in line, as it was.
+
+        The provider is broken, not the job: it keeps its place in the queue
+        (`event_at`, `queue_seq`), spends no attempt and no retry, and is
+        claimed again once `model_backoff` lets a probe through. Whatever the
+        SDK may have kept of the failed write stays under that write's request
+        id; the next one gets an id of its own (`sdk_attempt`), so the SDK
+        does not replay the failure instead of calling the model.
+        """
+        now = datetime.now(UTC).isoformat()
+        where = "job_id=? AND state=?"
+        params: tuple[Any, ...] = (job_id, RUNNING)
+        if owner is not None:
+            where += " AND lease_owner=?"
+            params += (owner,)
+        with main_database(self.database_path).write() as connection, connection:
+            updated = connection.execute(
+                "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,lease_expires_at=NULL,"
+                "attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,"
+                "sdk_attempt=sdk_attempt+hy_invoked,hy_invoked=0,"
+                "last_error=?,updated_at=? WHERE " + where,
+                (PENDING, error_code, now, *params),
+            )
+        return updated.rowcount == 1
+
+    def retry_or_fail(
+        self,
+        job_id: str,
+        *,
+        error_code: str,
+        owner: str | None = None,
+        now: datetime | None = None,
+    ) -> str:
+        """Retry a job that failed for a reason of its own, or give up on it.
+
+        Up to `JOB_RETRY_LIMIT` retries, each after a longer wait
+        (`job_retry_backoff`), held by the lease so the claim skips the job
+        until then. After the last one the job is `failed`: shown with its
+        code, out of the queue's way. A write that reached the SDK is re-run
+        under a new request id. Returns the state written, or "" when the row
+        is no longer this owner's.
+        """
+        now = now or datetime.now(UTC)
+        with (
+            main_database(self.database_path).write(row_factory=sqlite3.Row) as connection,
+            connection,
+        ):
+            row = connection.execute(
+                "SELECT state,lease_owner,retries FROM memory_write_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["state"]) != RUNNING
+                or (owner is not None and row["lease_owner"] != owner)
+            ):
+                return ""
+            retry = int(row["retries"]) + 1
+            if retry > JOB_RETRY_LIMIT:
+                connection.execute(
+                    "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,lease_expires_at=NULL,"
+                    "last_error=?,updated_at=? WHERE job_id=? AND state=?",
+                    (FAILED, error_code, now.isoformat(), job_id, RUNNING),
+                )
+                return FAILED
+            connection.execute(
+                "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,lease_expires_at=?,"
+                "attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,"
+                "sdk_attempt=sdk_attempt+hy_invoked,hy_invoked=0,retries=?,"
+                "last_error=?,updated_at=? WHERE job_id=? AND state=?",
+                (
+                    PENDING,
+                    (now + job_retry_backoff(retry)).isoformat(),
+                    retry,
+                    error_code,
+                    now.isoformat(),
+                    job_id,
+                    RUNNING,
+                ),
+            )
+        return PENDING
+
+    def recover_unknown(
+        self,
+        *,
+        in_flight: Callable[[str], bool] = lambda _request_id: False,
+        limit: int = 128,
+        now: datetime | None = None,
+    ) -> int:
+        """Move every `unknown` job back into the queue, or out of it.
+
+        A job is `unknown` when its write may have reached the SDK and its
+        worker never learned how it ended: the process stopped, the lease
+        lapsed, or the work ceiling gave up on it. It is re-run, counted as a
+        retry so a crash loop ends in `failed`. The re-run gets a new SDK
+        request id and, before it starts, asks the SDK how the previous id
+        ended (`execute_job`): a write that did succeed is completed from its
+        receipt instead of being made twice.
+
+        Jobs from before this existed (upgrade) are handled the same way,
+        once: from then on they follow the normal rules. A write whose SDK
+        call is still running in this process (`in_flight`) is left until it
+        ends. A legacy row whose write is known to have landed against an
+        authority Core could not verify (`NON_RETRYABLE_POST_WRITE_CODES`) is
+        never re-run: it is `failed`, which says so.
+        """
+        now = now or datetime.now(UTC)
+        changed = 0
+        with (
+            main_database(self.database_path).write(row_factory=sqlite3.Row) as connection,
+            connection,
+        ):
+            rows = connection.execute(
+                "SELECT job_id,idempotency_key,sdk_request_id,sdk_attempt,retries,last_error "
+                "FROM memory_write_jobs WHERE state=? ORDER BY queue_seq LIMIT ?",
+                (UNKNOWN, limit),
+            ).fetchall()
+            for row in rows:
+                if in_flight(
+                    sdk_request_id(str(row["idempotency_key"]), int(row["sdk_attempt"]))
+                    if int(row["sdk_attempt"]) else str(row["sdk_request_id"] or row["idempotency_key"])
+                ):
+                    continue
+                last_error = str(row["last_error"] or "")
+                code = last_error if _ERROR_CODE.fullmatch(last_error) else INTERRUPTED_ERROR_CODE
+                retry = int(row["retries"]) + 1
+                if last_error in NON_RETRYABLE_POST_WRITE_CODES or retry > JOB_RETRY_LIMIT:
+                    changed += connection.execute(
+                        "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,"
+                        "lease_expires_at=NULL,last_error=?,updated_at=? "
+                        "WHERE job_id=? AND state=?",
+                        (FAILED, code, now.isoformat(), str(row["job_id"]), UNKNOWN),
+                    ).rowcount
+                    continue
+                changed += connection.execute(
+                    "UPDATE memory_write_jobs SET state=?,lease_owner=NULL,lease_expires_at=?,"
+                    "attempts=0,sdk_attempt=sdk_attempt+1,hy_invoked=0,retries=?,"
+                    "last_error=?,updated_at=? WHERE job_id=? AND state=?",
+                    (
+                        PENDING,
+                        (now + job_retry_backoff(retry)).isoformat(),
+                        retry,
+                        code,
+                        now.isoformat(),
+                        str(row["job_id"]),
+                        UNKNOWN,
+                    ),
+                ).rowcount
+        if changed:
+            logger.info("durable_write_unknown_recovered count=%d", changed)
+        return changed
 
     def settle_worker_error(self, job_id: str, *, error_code: str, owner: str | None = None) -> str:
         """Fallback settlement when the injected executor raises past its guard.
@@ -1978,6 +2224,18 @@ class DurableWriteQueue:
             )
         return str(target)
 
+    def sdk_request_id(self, job_id: str, attempt: int | None = None) -> str:
+        """Stable across automatic attempts; renewed only by confirmed retry."""
+        with main_database(self.database_path).read() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(sdk_request_id,idempotency_key),sdk_attempt,idempotency_key FROM memory_write_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("durable_write_job_missing")
+        current = int(row[1]) if attempt is None else attempt
+        return sdk_request_id(str(row[2]), current) if current else str(row[0])
+
     def retry_unknown_confirmed(self, job_id: str) -> int:
         """Requeue one unknown write only after an explicit user decision.
 
@@ -2025,10 +2283,11 @@ class DurableWriteQueue:
                 UPDATE memory_write_jobs
                 SET state='pending', attempts=0, lease_owner=NULL,
                     lease_expires_at=NULL, hy_invoked=0,
+                    sdk_attempt=0, sdk_request_id=CASE WHEN ? THEN ? ELSE sdk_request_id END,
                     last_error='model_content_manual_retry_requested', updated_at=?
                 WHERE job_id=? AND state='unknown'
                 """,
-                (now, job_id),
+                (int(self.sdk_authority), f"retry:{uuid4()}", now, job_id),
             ).rowcount
         return changed
 
@@ -2083,115 +2342,6 @@ class DurableWriteQueue:
                 (payload, now, job_id),
             ).rowcount
         return changed
-
-    def retry_timed_out_unknown_after_reconcile(
-        self,
-        *,
-        older_than: datetime,
-        limit: int = 32,
-    ) -> int:
-        """Requeue bounded timeout unknowns only after the caller queried HY.
-
-        This is not the general unknown retry path. Only a timed-out write with
-        attempts remaining is eligible, and attempts are preserved so repeated
-        timeouts stop at the durable ceiling instead of looping forever.
-        """
-        if type(limit) is not int or limit < 1:
-            raise ValueError("limit must be positive")
-        now = datetime.now(UTC).isoformat()
-        with (
-            main_database(self.database_path).write(row_factory=sqlite3.Row) as connection,
-            connection,
-        ):
-            rows = connection.execute(
-                "SELECT job_id FROM memory_write_jobs "
-                "WHERE state=? AND last_error='hy_memory_timeout' "
-                "AND attempts < max_attempts AND updated_at <= ? "
-                "ORDER BY updated_at, job_id LIMIT ?",
-                (UNKNOWN, older_than.isoformat(), limit),
-            ).fetchall()
-            job_ids = tuple(str(row["job_id"]) for row in rows)
-            if not job_ids:
-                return 0
-            placeholders = ",".join("?" for _ in job_ids)
-            connection.execute(
-                f"UPDATE memory_write_jobs SET state=?, lease_owner=NULL, "
-                f"lease_expires_at=NULL, hy_invoked=0, "
-                f"last_error='model_content_reconciled_absent_retry', updated_at=? "
-                f"WHERE state=? AND job_id IN ({placeholders})",
-                (PENDING, now, UNKNOWN, *job_ids),
-            )
-            if _legacy_task_links_present(connection):
-                connection.execute(
-                    f"UPDATE memory_tasks SET status=?, runner_token=NULL, "
-                    f"last_error_code='model_content_reconciled_absent_retry', updated_at=? "
-                    f"WHERE status=? AND task_id IN ("
-                    f"SELECT inputs.task_id FROM memory_task_inputs AS inputs "
-                    f"JOIN memory_write_job_evidence AS linked ON EXISTS ("
-                    f"SELECT 1 FROM json_each(inputs.refs_json) AS ref "
-                    f"WHERE json_extract(ref.value, '$.evidence_id')=linked.evidence_id) "
-                    f"WHERE linked.job_id IN ({placeholders}))",
-                    (MemoryTaskStatus.PENDING, now, MemoryTaskStatus.UNKNOWN, *job_ids),
-                )
-        return len(job_ids)
-
-    def retry_first_unknown_after_reconcile(
-        self,
-        *,
-        older_than: datetime,
-        limit: int = 32,
-    ) -> int:
-        """Retry one unresolved unknown outcome once, after reconciliation.
-
-        The caller first asks HY and checks linked governed output. Rows still
-        unknown may have lost the response after the SDK call, so one bounded
-        retry is useful. `attempts=1` is the guard: the retry claim increments
-        it to two, and a second unknown is left for explicit user recovery.
-        """
-        if type(limit) is not int or limit < 1:
-            raise ValueError("limit must be positive")
-        now = datetime.now(UTC).isoformat()
-        with (
-            main_database(self.database_path).write(row_factory=sqlite3.Row) as connection,
-            connection,
-        ):
-            rows = connection.execute(
-                "SELECT job_id FROM memory_write_jobs "
-                "WHERE state=? AND attempts=1 AND attempts < max_attempts "
-                f"AND COALESCE(last_error, '') NOT IN "
-                f"({','.join('?' for _ in NON_RETRYABLE_POST_WRITE_CODES)}) "
-                "AND updated_at <= ? ORDER BY updated_at, job_id LIMIT ?",
-                (
-                    UNKNOWN,
-                    *NON_RETRYABLE_POST_WRITE_CODES,
-                    older_than.isoformat(),
-                    limit,
-                ),
-            ).fetchall()
-            job_ids = tuple(str(row["job_id"]) for row in rows)
-            if not job_ids:
-                return 0
-            placeholders = ",".join("?" for _ in job_ids)
-            connection.execute(
-                f"UPDATE memory_write_jobs SET state=?, lease_owner=NULL, "
-                f"lease_expires_at=NULL, hy_invoked=0, "
-                f"last_error='model_content_unknown_auto_retry', updated_at=? "
-                f"WHERE state=? AND attempts=1 AND job_id IN ({placeholders})",
-                (PENDING, now, UNKNOWN, *job_ids),
-            )
-            if _legacy_task_links_present(connection):
-                connection.execute(
-                    f"UPDATE memory_tasks SET status=?, runner_token=NULL, "
-                    f"last_error_code='model_content_unknown_auto_retry', updated_at=? "
-                    f"WHERE status=? AND task_id IN ("
-                    f"SELECT inputs.task_id FROM memory_task_inputs AS inputs "
-                    f"JOIN memory_write_job_evidence AS linked ON EXISTS ("
-                    f"SELECT 1 FROM json_each(inputs.refs_json) AS ref "
-                    f"WHERE json_extract(ref.value, '$.evidence_id')=linked.evidence_id) "
-                    f"WHERE linked.job_id IN ({placeholders}))",
-                    (MemoryTaskStatus.PENDING, now, MemoryTaskStatus.UNKNOWN, *job_ids),
-                )
-        return len(job_ids)
 
     def resolve_unknown_from_linked_output(self, job_id: str) -> bool:
         """Close an unknown durable row when local governance output proves success."""
@@ -2275,7 +2425,9 @@ class DurableWriteQueue:
             excluded_clause = ""
         with main_database(self.database_path).read(row_factory=sqlite3.Row) as connection:
             rows = connection.execute(
-                "SELECT job_id, idempotency_key, created_at, updated_at, last_error "
+                "SELECT job_id, CASE WHEN sdk_attempt>0 THEN idempotency_key || '#r' || sdk_attempt "
+                "ELSE COALESCE(sdk_request_id,idempotency_key) END AS idempotency_key, "
+                "created_at, updated_at, last_error "
                 "FROM memory_write_jobs "
                 "WHERE state=? "
                 f"{cursor_clause} "
@@ -2331,7 +2483,9 @@ class DurableWriteRegistry:
         # distinguishing detail. Parked and cancelled states keep their own
         # names — collapsing an authorization stop into `failed` is exactly the
         # pollution the task layer already rejects.
-        if record.state in (PENDING, RUNNING):
+        if record.state in (PENDING, RUNNING, UNKNOWN):
+            # `unknown` no longer waits for anyone: the drain re-runs it
+            # within seconds (`recover_unknown`), so to a caller it is queued.
             state = "accepted"
         elif record.state == DEAD:
             state = "failed"
@@ -2355,6 +2509,8 @@ class DurableWriteRegistry:
             detail=detail,
             raw_ids=record.sdk_raw_ids,
             memory_ids=record.sdk_memory_ids,
+            error_code=record.error_code if record.state != COMPLETED else None,
+            next_retry_at=record.retry_at,
         )
 
     def submit(
@@ -2436,12 +2592,22 @@ async def execute_job(
     source_writes_permitted: Callable[[str], bool] | None = None,
     admit_hy_invocation: Callable[[str, Callable[[], Awaitable[bool]]], Awaitable[bool]]
     | None = None,
+    model_failures: Callable[[], AbstractContextManager[ModelAttempt | None]] | None = None,
 ) -> None:
     """Run one durable job through the SDK-authority processor.
 
     ``process_sdk_job`` owns the one public SDK write. ``hy_invoked`` is
     recorded immediately before that call, so a crash mid-write is later
-    reclaimed to ``unknown`` instead of being retried blindly.
+    reclaimed to ``unknown`` and re-run (`recover_unknown`).
+
+    Each write uses the SDK request id of the job's current attempt
+    (`sdk_request_id`). A re-run first asks the SDK how the previous id
+    ended, and completes from its receipt if it succeeded.
+
+    ``model_failures`` (`ModelBackoff.attempt`) says whether the provider
+    failed while this write was in flight: such a job goes back to `pending`
+    as it was and waits for the provider. Any other failure is retried
+    `JOB_RETRY_LIMIT` times and then `failed`.
     """
     # Every store call here is synchronous SQLite work on the single writer or
     # a reader; made from the loop it would block health checks and the API for
@@ -2511,16 +2677,31 @@ async def execute_job(
             raise RuntimeError("durable_write_lease_lost_before_invocation")
         hy_invoked = True
 
+    attempt = await in_the_background(queue.sdk_attempt, job_id)
+    window = model_failures() if model_failures is not None else nullcontext(None)
+    provider: ModelAttempt | None = None
     try:
         level = ServiceLevel.REALTIME if request.priority == "live" else ServiceLevel.BACKGROUND
-        with service_level_context(level):
-            sdk_result = await supervisor.process_sdk_job(
-                records,
-                request_id=request.idempotency_key,
-                before_hy_invocation=mark_hy_invocation,
+        with service_level_context(level), window as provider:
+            previous = (
+                await _previous_write_receipt(
+                    supervisor, await in_the_background(queue.sdk_request_id, job_id, attempt - 1)
+                )
+                if attempt > 0
+                else None
             )
-            raw_ids = sdk_result.raw_ids
-            memory_ids = sdk_result.memory_ids
+            if previous is not None:
+                # The write before this one did land: its worker only never
+                # learned so. Complete from its receipt rather than write twice.
+                raw_ids, memory_ids = previous.raw_ids, previous.memory_ids
+            else:
+                sdk_result = await supervisor.process_sdk_job(
+                    records,
+                    request_id=await in_the_background(queue.sdk_request_id, job_id),
+                    before_hy_invocation=mark_hy_invocation,
+                )
+                raw_ids = sdk_result.raw_ids
+                memory_ids = sdk_result.memory_ids
     except Exception as error:  # noqa: BLE001 - classified below
         # Never persist the raw message: it may be a provider response or the
         # user's own text, and `last_error` is shown over HTTP as `detail`.
@@ -2535,51 +2716,56 @@ async def execute_job(
         ):
             await in_the_background(queue.release_unstarted, job_id, owner=owner)
             return
-        # The write coordinator classifies these before any SDK client is leased, so HY
-        # was provably not called. They must not read as `failed`:
+        provider_failure = provider.failure if provider is not None else None
+        if hy_invoked and provider_failure is not None:
+            # The provider failed this write (a broken key, a model that is
+            # gone, a provider that is down): the job is fine and waits for
+            # the provider, in its place, without spending a retry. The
+            # breaker paces when it is tried again.
+            await in_the_background(
+                queue.requeue_for_model, job_id, error_code=provider_failure, owner=owner
+            )
+            logger.info(
+                "durable_write_job_waiting_for_provider job_id=%s error_code=%s sdk_error=%s",
+                job_id,
+                provider_failure,
+                code,
+            )
+            return
+        # Refusals made before the SDK was called. They prove nothing was
+        # sent, and are states, not failures:
         # - authorization stop -> cancelled (the user turned it off);
-        # - no permission yet -> waiting_for_permission (parked, re-admitted
-        #   when a snapshot admits it);
-        # - transient model/provider trouble -> waiting_for_model (parked).
-        # Everything else may have crossed into HY, and HY has no idempotency
-        # key, so it is `unknown` rather than a blind retry.
+        # - no permission yet -> waiting_for_permission (re-admitted when a
+        #   snapshot admits it);
+        # - no usable model yet -> waiting_for_model (re-admitted when one is).
+        state: str | None = None
         if code in PRE_SEND_REFUSAL_CODES:
-            # The frozen input window is checked before the payload reaches
-            # HY. This one refusal therefore has a proven pre-send boundary.
-            state, invoked_marker = FAILED, False
-        elif hy_invoked:
-            # Error names do not prove execution phase: permission and
-            # evidence rechecks also run after HY returns. Once the durable
-            # marker is set, every failure is possibly-sent and must stay out
-            # of the automatic retry path.
-            state, invoked_marker = UNKNOWN, True
-        elif code in POLICY_STOPPED_CODES:
-            state, invoked_marker = CANCELLED, False
-        elif code in PERMISSION_REQUIRED_CODES or code.startswith("model_content_policy"):
-            state, invoked_marker = WAITING_FOR_PERMISSION, False
-        elif code in MODEL_NOT_READY_CODES:
-            state, invoked_marker = WAITING_FOR_MODEL, False
-        elif code == "model_content_transport_request_failed":
-            # The generation or embedding HTTP exchange can fail after HY has
-            # already persisted a node. Treating that as a pre-send failure
-            # permits a blind duplicate; the confirmed unknown flow first
-            # reconciles by request identity and only then requeues absence.
-            state, invoked_marker = UNKNOWN, True
-        elif code.startswith("model_content_") and code != "model_content_outcome_unknown":
-            state, invoked_marker = FAILED, False
+            # Deterministic: the same input exceeds the same window again.
+            state = FAILED
+        elif not hy_invoked and code in POLICY_STOPPED_CODES:
+            state = CANCELLED
+        elif not hy_invoked and (
+            code in PERMISSION_REQUIRED_CODES or code.startswith("model_content_policy")
+        ):
+            state = WAITING_FOR_PERMISSION
+        elif not hy_invoked and code in MODEL_NOT_READY_CODES:
+            state = WAITING_FOR_MODEL
+        if state is not None:
+            await in_the_background(
+                queue.settle,
+                job_id,
+                state=state,
+                error_code=code,
+                hy_invoked=hy_invoked,
+                owner=owner,
+            )
         else:
-            # Force the marker even if this row was not claimed first (a direct
-            # call): the outcome is only `unknown` because HY may have been
-            # reached, and reclaim must treat it as possibly-sent.
-            state, invoked_marker = UNKNOWN, True
-        await in_the_background(
-            queue.settle,
-            job_id,
-            state=state,
-            error_code=code,
-            hy_invoked=invoked_marker,
-            owner=owner,
-        )
+            # Anything else is this job's own trouble: content the model or
+            # the SDK refused, a reply that did not parse, a check that failed
+            # after the write. Retried a few times, then `failed`.
+            state = await in_the_background(
+                queue.retry_or_fail, job_id, error_code=code, owner=owner
+            )
         # Never `logger.exception` here: it prints the exception's message,
         # which may be a provider response or the user's own text. Log the
         # already-sanitised code instead, matching `hy-failure-classification`.
@@ -2597,9 +2783,10 @@ async def execute_job(
             # chain, never its message: `error_code=AttributeError` alone
             # named no location.
             logger.error(
-                "durable_write_job_failed job_id=%s error_code=%s chain=%s",
+                "durable_write_job_failed job_id=%s error_code=%s state=%s chain=%s",
                 job_id,
                 code,
+                state or "stale",
                 error_chain_text(error),
             )
         return
@@ -2622,6 +2809,14 @@ async def execute_job(
             release,
             tuple(record.evidence_id for record in records),
         )
+
+
+async def _previous_write_receipt(supervisor: Any, request_id: str) -> Any | None:
+    """The receipt of an earlier write of this job, if the SDK says it succeeded."""
+    inquire = getattr(supervisor, "inquire_write_outcome", None)
+    if inquire is None:
+        return None
+    return await inquire(request_id)
 
 
 class DurableWriteDrain:
@@ -2653,6 +2848,7 @@ class DurableWriteDrain:
         reconcile_unknown: Callable[[], Awaitable[None]] | None = None,
         source_writes_permitted: Callable[[str], bool] | None = None,
         source_claim_enabled: Callable[[str], bool] | None = None,
+        model_claim_allowance: Callable[[], int | None] | None = None,
     ) -> None:
         self.queue = queue
         self.execute = execute
@@ -2728,6 +2924,11 @@ class DurableWriteDrain:
         self.reconcile_unknown = reconcile_unknown
         self.source_writes_permitted = source_writes_permitted
         self.source_claim_enabled = source_claim_enabled or source_writes_permitted
+        #: How many jobs may be claimed now while the model provider is being
+        #: given a rest (`model_backoff`): None for no limit, 0 to claim none.
+        #: Without it a backlog failing in 50ms each was hundreds of requests
+        #: a minute against a provider that refused every one (#245).
+        self.model_claim_allowance = model_claim_allowance
         self._last_unknown_reconcile: datetime | None = None
 
     def claim(
@@ -2771,6 +2972,14 @@ class DurableWriteDrain:
                 return ()
         except sqlite3.Error:
             pass
+        if self.model_claim_allowance is not None:
+            # Asked only once there is work to claim: while the provider is
+            # paused nothing is, and after the pause one job probes it.
+            allowance = self.model_claim_allowance()
+            if allowance is not None:
+                if allowance < 1:
+                    return ()
+                limit = min(limit, allowance)
         enabled_sources: set[str] | None = None
         if self.source_writes_permitted is not None:
             with main_database(self.queue.database_path).read() as connection:
@@ -3077,11 +3286,9 @@ class DurableWriteDrain:
                 "durable_write_drain_job_ceiling_exceeded job_id=%s",
                 job_id,
             )
-            await in_the_background(
-                self.queue.settle_worker_error,
+            await self._settle_worker_error(
                 job_id,
                 error_code="durable_work_ceiling_exceeded",
-                owner=self.owner,
             )
         except Exception as error:
             logger.error(
@@ -3090,11 +3297,9 @@ class DurableWriteDrain:
                 type(error).__name__,
             )
             self._record_database_error(error)
-            await in_the_background(
-                self.queue.settle_worker_error,
+            await self._settle_worker_error(
                 job_id,
                 error_code="durable_executor_error",
-                owner=self.owner,
             )
         finally:
             execution.cancel()
@@ -3102,6 +3307,36 @@ class DurableWriteDrain:
             for task in (execution, renewal):
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+
+    async def _settle_worker_error(self, job_id: str, *, error_code: str) -> None:
+        """Best-effort settlement must not kill the long-lived drain.
+
+        The row still has a durable lease when this fallback runs. If the
+        single SQLite writer is busy, waiting and retrying here only extends
+        the same contention that made the executor fail. Leave the row where
+        it is instead: lease recovery later moves a never-invoked job back to
+        pending and a possibly-invoked job to unknown, preserving the
+        no-blind-retry boundary.
+
+        Only transient lock/busy refusals are deferred. A malformed query or
+        other programming error still escapes to the outer per-job fence.
+        """
+        try:
+            await in_the_background(
+                self.queue.settle_worker_error,
+                job_id,
+                error_code=error_code,
+                owner=self.owner,
+            )
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error).lower() and "busy" not in str(error).lower():
+                raise
+            self._sample_database_failure("settle_worker_error", error)
+            logger.warning(
+                "durable_write_worker_settlement_deferred job_id=%s error_type=%s",
+                job_id,
+                type(error).__name__,
+            )
 
     async def _execute_with_ceiling(self, job_id: str) -> None:
         ceiling = (
@@ -3140,7 +3375,26 @@ class DurableWriteDrain:
                 finished = {task for task in active if task.done()}
                 active.difference_update(finished)
                 for task in finished:
-                    await task
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        raise
+                    except _LeaseRenewalFatalError:
+                        # Renewal is the ownership fence. If it is broken,
+                        # continuing could let another worker reclaim a job
+                        # while this process is still executing it.
+                        raise
+                    except Exception as error:
+                        # A job task is a fault-containment boundary. Its row
+                        # retains the durable lease and is recovered according
+                        # to hy_invoked; killing this only consumer would strand
+                        # every unrelated write behind it.
+                        self._record_database_error(error)
+                        logger.error(
+                            "durable_write_drain_job_task_failed task_name=%s error_type=%s",
+                            task.get_name(),
+                            type(error).__name__,
+                        )
                 if self.budget is not None and work_deadline is not None:
                     now = _time.monotonic()
                     # Always admit the first unit of a cycle even when the
@@ -3165,7 +3419,12 @@ class DurableWriteDrain:
                         else ()
                     )
                     for job_id in ids:
-                        active.add(asyncio.create_task(self._run_claimed_job(job_id)))
+                        active.add(
+                            asyncio.create_task(
+                                self._run_claimed_job(job_id),
+                                name=f"durable-write:{job_id}",
+                            )
+                        )
                     executed = len(ids)
                     self._database_failure_streaks.pop("claim", None)
                 except asyncio.CancelledError:

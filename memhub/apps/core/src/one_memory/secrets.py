@@ -1,6 +1,5 @@
 import json
 import os
-import pwd
 import subprocess
 import sys
 import threading
@@ -192,6 +191,8 @@ def _keychain_delete_many_command() -> list[str]:
 
 
 def _keychain_environment() -> dict[str, str]:
+    import pwd  # Only available on Unix, needed for the macOS Keychain child.
+
     environment = dict(os.environ)
     environment["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     return environment

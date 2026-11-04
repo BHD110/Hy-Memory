@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { windowsPrivateStorage } from "@one-memory/host-bridge";
 import type {
   BatchJournal,
   BatchLedger,
@@ -54,6 +55,7 @@ export class PersistentBatchLedger implements BatchLedger {
     const root = await checkedRoot(dataDir);
     const directory = path.join(dataDir, "connection-batches");
     await fs.mkdir(directory, { mode: 0o700 });
+    await windowsPrivateStorage(directory, true);
     const info = await fs.lstat(directory);
     privateDirectory(info);
     const binding: Binding = {
@@ -308,6 +310,7 @@ export class PersistentBatchLedger implements BatchLedger {
     );
   }
   private async checkDirectories() {
+    await windowsPrivateStorage(this.directory);
     const root = await checkedRoot(this.dataDir);
     const directory = await fs.lstat(this.directory);
     privateDirectory(directory);
@@ -342,7 +345,7 @@ export class PersistentBatchLedger implements BatchLedger {
 }
 
 async function checkedRoot(dataDir: string): Promise<Stats> {
-  if (process.platform === "win32" || typeof process.getuid !== "function")
+  if (process.platform !== "win32" && typeof process.getuid !== "function")
     fail("platform_unsupported");
   if (
     !path.isAbsolute(dataDir) ||
@@ -355,6 +358,10 @@ async function checkedRoot(dataDir: string): Promise<Stats> {
   return info;
 }
 function privateDirectory(info: Stats) {
+  if (process.platform === "win32") {
+    if (!info.isDirectory() || info.isSymbolicLink()) fail("directory_unsafe");
+    return;
+  }
   if (
     !info.isDirectory() ||
     info.isSymbolicLink() ||
@@ -364,6 +371,10 @@ function privateDirectory(info: Stats) {
     fail("directory_unsafe");
 }
 function privateFile(info: Stats) {
+  if (process.platform === "win32") {
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) fail("file_unsafe");
+    return;
+  }
   if (
     !info.isFile() ||
     info.isSymbolicLink() ||
@@ -377,6 +388,7 @@ function same(a: Identity, b: Identity) {
   return a.dev === b.dev && a.ino === b.ino;
 }
 async function readJson(file: string, maximum: number): Promise<unknown> {
+  await windowsPrivateStorage(file);
   const handle = await fs.open(file, READ);
   try {
     const before = await handle.stat();
@@ -428,6 +440,7 @@ async function writeNew(file: string, text: string): Promise<Identity> {
   }
 }
 async function syncDirectory(directory: string) {
+  if (process.platform === "win32") return;
   const handle = await fs.open(
     directory,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,

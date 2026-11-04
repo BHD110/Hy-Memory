@@ -18,6 +18,7 @@ import {
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { inspect } from "node:util";
+import { windowsPrivateStorage } from "./windows-private-storage.js";
 import { isHostId } from "@one-memory/contracts";
 
 /**
@@ -186,7 +187,7 @@ export class HostGrantStore {
   #observedDigest: string | undefined;
 
   private constructor(directory: string, options: HostGrantStoreOptions) {
-    if (process.platform === "win32" || typeof process.getuid !== "function") {
+    if (process.platform !== "win32" && typeof process.getuid !== "function") {
       fail("host_grant_platform_unsupported");
     }
     if (
@@ -219,6 +220,7 @@ export class HostGrantStore {
         throw error;
       }
       await chmod(store.#directory, 0o700);
+      await windowsPrivateStorage(store.#directory, true);
       await store.#checkDirectory();
       await store.#commit({
         schemaVersion: 1,
@@ -487,6 +489,7 @@ export class HostGrantStore {
   }
 
   async #checkDirectory(): Promise<void> {
+    await windowsPrivateStorage(this.#directory);
     const info = await lstat(this.#directory);
     checkPrivate(info, "directory");
     if (
@@ -504,6 +507,7 @@ export class HostGrantStore {
     for (;;) {
       await this.#checkDirectory();
       const file = path.join(this.#directory, FILE_NAME);
+      await windowsPrivateStorage(file);
       checkPrivate(await lstat(file), "file");
       const handle = await open(
         file,
@@ -614,6 +618,10 @@ export class HostGrantStore {
       }
       await rename(temporary, path.join(this.#directory, FILE_NAME));
       created = false;
+      if (process.platform === "win32") {
+        this.#observe(data);
+        return;
+      }
       const directory = await open(
         this.#directory,
         constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -939,6 +947,11 @@ function parseStore(raw: string): StoreData {
 }
 
 function checkPrivate(info: Stats, kind: "directory" | "file"): void {
+  if (process.platform === "win32") {
+    if (info.isSymbolicLink() || (kind === "directory" ? !info.isDirectory() : !info.isFile() || info.nlink !== 1))
+      fail("host_grant_store_unsafe");
+    return;
+  }
   if (
     (kind === "directory"
       ? !info.isDirectory()

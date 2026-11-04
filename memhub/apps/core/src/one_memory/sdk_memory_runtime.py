@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +25,7 @@ from one_memory.hy_runtime_config import HY_MEMORY_READER
 from one_memory.hy_sdk_runtime import SdkClientHandle, sdk_relevance_floor
 from one_memory.hy_sdk_types import HySdkError, parse_sdk_search
 from one_memory.memory_queue import ExtractionWindowPreset, QueueDepths
-from one_memory.memory_server.durable_queue import COMPLETED, DurableWriteQueue
+from one_memory.memory_server.durable_queue import DurableWriteQueue
 from one_memory.sdk_write_processor import SdkWriteCoordinator
 from one_memory.semantic_deadline import SemanticMemoryHit
 
@@ -45,6 +45,10 @@ _RAW_STATUSES = (
 )
 
 
+_WAITING_STATES = frozenset({"pending", "waiting_for_model", "waiting_for_permission"})
+_WAITING_SQL = ",".join(f"'{state}'" for state in sorted(_WAITING_STATES))
+
+
 class SdkMemoryRuntime:
     """Product services that remain after legacy task/governance writes retire."""
 
@@ -56,7 +60,9 @@ class SdkMemoryRuntime:
         write_queue: DurableWriteQueue,
         extraction_settings: ExtractionSettingsStore,
         data_dir: Path,
+        source_active: Callable[[str], bool] = lambda _source_key: True,
     ) -> None:
+        self.source_active = source_active
         self.coordinator = coordinator
         self.read_handle = read_handle
         self.write_queue = write_queue
@@ -114,7 +120,9 @@ class SdkMemoryRuntime:
         while True:
             await asyncio.sleep(RAW_RETENTION_CHECK_SECONDS)
             try:
-                removed = await self.prune_expired_raw()
+                # Its own task, so this pass's use of the read client ends
+                # with it instead of with this loop (see `sdk_read_handle`).
+                removed = await asyncio.create_task(self.prune_expired_raw())
                 if removed:
                     logger.info("sdk_raw_retention_deleted count=%d", removed)
             except asyncio.CancelledError:
@@ -296,22 +304,11 @@ class SdkMemoryRuntime:
         now = datetime.now(UTC)
         fresh_since = (now - timedelta(days=7)).isoformat()
         with main_database(self.write_queue.database_path).read() as database:
-            fresh = int(
-                database.execute(
-                    "SELECT COUNT(*) FROM memory_write_jobs "
-                    "WHERE state IN ('pending','waiting_for_model','waiting_for_permission') "
-                    "AND event_at>=?",
-                    (fresh_since,),
-                ).fetchone()[0]
-            )
-            backlog = int(
-                database.execute(
-                    "SELECT COUNT(*) FROM memory_write_jobs "
-                    "WHERE state IN ('pending','waiting_for_model','waiting_for_permission') "
-                    "AND event_at<?",
-                    (fresh_since,),
-                ).fetchone()[0]
-            )
+            rows = database.execute(
+                "SELECT source_key,event_at>=? AS fresh,COUNT(*) FROM memory_write_jobs "
+                f"WHERE state IN ({_WAITING_SQL}) GROUP BY source_key,fresh",
+                (fresh_since,),
+            ).fetchall()
             recent = tuple(
                 datetime.fromisoformat(str(row[0]))
                 for row in database.execute(
@@ -319,6 +316,9 @@ class SdkMemoryRuntime:
                     "ORDER BY updated_at DESC LIMIT 8"
                 )
             )
+        active = self._active_lanes({str(row[0]) for row in rows})
+        fresh = sum(int(row[2]) for row in rows if str(row[0]) in active and row[1])
+        backlog = sum(int(row[2]) for row in rows if str(row[0]) in active and not row[1])
         return QueueDepths(fresh=fresh, backlog=backlog, recent_completions=recent)
 
     def active_depths(self) -> tuple[int, int]:
@@ -331,13 +331,27 @@ class SdkMemoryRuntime:
         return running, running
 
     def status_counts(self) -> dict[str, int]:
+        """Jobs per state, with a suspended source's waiting jobs as `suspended`.
+
+        Those jobs keep their state in the table: suspension is the source's
+        switch, not the row's, so turning the source back on is all it takes
+        for the drain to claim them again, and nothing is moved or deleted.
+        """
         with main_database(self.write_queue.database_path).read() as database:
-            return {
-                str(row[0]): int(row[1])
-                for row in database.execute(
-                    "SELECT state,COUNT(*) FROM memory_write_jobs GROUP BY state"
-                )
-            }
+            rows = database.execute(
+                "SELECT source_key,state,COUNT(*) FROM memory_write_jobs GROUP BY source_key,state"
+            ).fetchall()
+        active = self._active_lanes({str(row[0]) for row in rows if str(row[1]) in _WAITING_STATES})
+        counts: dict[str, int] = {}
+        for source_key, state, count in rows:
+            name = str(state)
+            if name in _WAITING_STATES and str(source_key) not in active:
+                name = "suspended"
+            counts[name] = counts.get(name, 0) + int(count)
+        return counts
+
+    def _active_lanes(self, lanes: set[str]) -> set[str]:
+        return {lane for lane in lanes if self.source_active(lane)}
 
     def manual_batch_progress(self) -> tuple[int, int]:
         return 0, 0

@@ -113,6 +113,9 @@ class MemoryBatchExtractor:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         base_url = (profile.base_url or "").rstrip("/")
+        from one_memory.opencode_compat import opencode_session_header
+
+        headers.update(opencode_session_header(base_url))
         if profile.provider_kind is ProviderKind.OLLAMA and not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
         try:

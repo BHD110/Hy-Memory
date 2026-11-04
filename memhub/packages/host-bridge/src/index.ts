@@ -62,3 +62,4 @@ export {
   SourceNotificationError,
   type SourceNotificationHandler,
 } from "./source-notifications.js";
+export { windowsPrivateStorage } from "./windows-private-storage.js";

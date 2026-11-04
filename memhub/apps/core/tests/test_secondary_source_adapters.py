@@ -46,6 +46,7 @@ from one_memory.imports.sources.opencode import (
     create_opencode_adapter,
 )
 from one_memory.imports.sources.pi import PI_DESCRIPTOR, create_pi_adapter
+from one_memory.imports.sources.qoder_cn import create_qoder_cn_adapter
 from one_memory.imports.sources.qwen_code import (
     QWEN_CODE_DESCRIPTOR,
     create_qwen_code_adapter,
@@ -760,6 +761,7 @@ def test_catalog_registers_every_source_and_secondary_defaults(tmp_path: Path) -
         "cursor",
         "claude-code",
         "codex",
+        "qoder",
         "pi",
         "qwenwork",
         # The plan's ten plus Qwen Code, which recall had been installed into
@@ -1307,4 +1309,125 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.write_text(
         "".join(f"{json.dumps(record)}\n" for record in records),
         encoding="utf-8",
+    )
+
+
+def test_qoder_cn_imports_only_documented_memory_and_transcript_files(tmp_path: Path) -> None:
+    root = tmp_path / ".qoder-cn"
+    user_memory = root / "memory"
+    project = root / "projects" / "project-a"
+    project_memory = project / "memory"
+    user_memory.mkdir(parents=True)
+    project_memory.mkdir(parents=True)
+    (user_memory / "MEMORY.md").write_text("# Index\n- [details](user.md)\n", encoding="utf-8")
+    (user_memory / "user.md").write_text(
+        "---\nname: user\ndescription: remembered preference\n"
+        "metadata:\n  type: feedback\n---\n\nRemember this.\n@../outside.md\n",
+        encoding="utf-8",
+    )
+    (project_memory / "decision.md").write_text("Use SQLite locally.\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text("static instruction", encoding="utf-8")
+    (tmp_path / "outside.md").write_text("PRIVATE EXTERNAL CONTENT", encoding="utf-8")
+    session = "a1b2c3d4-0000-4000-8000-000000000001"
+    _write_jsonl(
+        project / f"{session}.jsonl",
+        [
+            {
+                "type": "user",
+                "uuid": "human",
+                "sessionId": session,
+                "origin": {"kind": "human"},
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "please remember"}],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "external",
+                "sessionId": session,
+                "userType": "external",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "injected context"}],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "notice",
+                "sessionId": session,
+                "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": [{"type": "text", "text": "task finished"}]},
+            },
+            {
+                "type": "assistant",
+                "uuid": "answer",
+                "sessionId": session,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "private reasoning"},
+                        {"type": "text", "text": "I will remember"},
+                    ],
+                },
+            },
+            {"type": "active-leaf", "sessionId": session},
+        ],
+    )
+    adapter = create_qoder_cn_adapter(_grant("qoder", root, tmp_path))
+    state = asyncio.run(adapter.install_state())
+    # Two memory files (the index is not a memory) plus one transcript.
+    assert state.installed and state.session_count == 3
+    first = _evidence(_scan(adapter))
+    assert len(first) == 4
+    texts = [row.evidence.verbatim for row in first]
+    assert "Remember this.\n@../outside.md\n" in [text.replace("\r\n", "\n") for text in texts]
+    assert "please remember" in texts and "I will remember" in texts
+    assert all(
+        value not in repr(texts)
+        for value in (
+            "PRIVATE EXTERNAL CONTENT",
+            "static instruction",
+            "injected context",
+            "task finished",
+            "private reasoning",
+            "# Index",
+        )
+    )
+    assert all(row.evidence.source_id == "qoder" for row in first)
+    assert len([row for row in first if row.evidence.content_kind == "memory_content"]) == 2
+    cursors = _cursors(_scan(adapter))
+    assert not _evidence(_scan(adapter, cursors=cursors))
+    (project_memory / "decision.md").write_text("Use PostgreSQL locally.\n", encoding="utf-8")
+    changed = _evidence(_scan(adapter, cursors=cursors))
+    assert len(changed) == 1
+    assert changed[0].evidence.verbatim.replace("\r\n", "\n") == "Use PostgreSQL locally.\n"
+    assert changed[0].evidence.idempotency_key in {row.evidence.idempotency_key for row in first}
+
+
+def test_qoder_cn_rejects_linked_memory_directory_and_oversized_file(tmp_path: Path) -> None:
+    root = tmp_path / ".qoder-cn"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("private", encoding="utf-8")
+    try:
+        (root / "memory").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks unavailable")
+    adapter = create_qoder_cn_adapter(_grant("qoder", root, tmp_path))
+    assert not _evidence(_scan(adapter))
+    (root / "memory").unlink()
+    memory = root / "memory"
+    memory.mkdir()
+    (memory / "huge.md").write_text("x" * 2048, encoding="utf-8")
+
+    async def collect():
+        return [event async for event in adapter.scan(ScanOptions(max_source_file_bytes=1024))]
+
+    events = asyncio.run(collect())
+    assert not _evidence(events)
+    assert any(
+        isinstance(event, ScanFailure) and event.reason_code is ScanIssueCode.FILE_TOO_LARGE
+        for event in events
     )

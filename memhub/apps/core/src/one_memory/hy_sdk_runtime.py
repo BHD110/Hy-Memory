@@ -43,6 +43,8 @@ from one_memory.model_profiles import (
     disable_thinking_params,
 )
 
+from one_memory.opencode_compat import opencode_session_header
+
 _RUNTIME_LOCK = threading.RLock()
 BUILTIN_RETRIEVAL_PROFILE_ID = "builtin-retrieval"
 _LOCAL_ONNX_PLACEHOLDER_URL = "http://127.0.0.1/local-onnx"
@@ -56,6 +58,21 @@ class _RuntimeEntry:
 
 
 _RUNTIMES: dict[Path, _RuntimeEntry] = {}
+
+
+@dataclass
+class _ClientEntry:
+    client: HyMemoryClient
+    references: int
+
+
+# One live client per (home, model identity, graph mode), reference counted.
+# Kuzu admits a single Database per path in this process: a second client that
+# opens the same graph drops to a no-op store and logs a lock error, and read
+# polls built one every ten seconds. Reusing the live client keeps exactly one
+# graph owner instead of re-opening the store per lease.
+_CLIENT_LOCK = threading.RLock()
+_CLIENTS: dict[tuple[object, ...], _ClientEntry] = {}
 
 # Homes whose SDK-owned local stores are held offline for maintenance, and
 # the client constructions in flight per home. Chroma keeps one process-wide
@@ -133,9 +150,15 @@ class LocalOnnxEmbeddingService:
 class ClientLease:
     """Own a client and release its shared runtime exactly once."""
 
-    def __init__(self, client: HyMemoryClient, data_dir: Path) -> None:
+    def __init__(
+        self,
+        client: HyMemoryClient,
+        data_dir: Path,
+        release: Callable[[], None] | None = None,
+    ) -> None:
         self.client = client
         self.data_dir = data_dir.resolve()
+        self._release = release
         self._closed = False
         self._close_lock = threading.Lock()
 
@@ -148,6 +171,9 @@ class ClientLease:
             if self._closed:
                 return
             self._closed = True
+            if self._release is not None:
+                self._release()
+                return
             try:
                 self.client.close()
             finally:
@@ -217,6 +243,33 @@ def builtin_retrieval_snapshot() -> ModelProfileSnapshot:
     )
 
 
+def retrieval_view(profile: ModelProfileSnapshot) -> ModelProfileSnapshot:
+    """The read side of `profile`: its embedding space, and no generation.
+
+    Reads must open the collection writes fill (#242), and the collection is
+    named by the embedding only. Generation stays the built-in placeholder, so
+    a read never needs the generation model. A remote embedding still needs
+    the profile's API key, which `build_sdk_config` uses as the embedding key.
+    """
+    provider = profile.embedding_provider_kind or profile.provider_kind
+    endpoint: str | None = None
+    if provider is not ProviderKind.LOCAL_ONNX:
+        endpoint = profile.embedding_base_url
+        if not endpoint:
+            raise HySdkRuntimeError("hy_sdk_model_endpoint_missing")
+    return builtin_retrieval_snapshot().model_copy(
+        update={
+            "profile_id": profile.profile_id,
+            "revision": profile.revision,
+            "embedding_provider_kind": provider,
+            "embedding_model": profile.embedding_model,
+            "embedding_base_url": endpoint,
+            "embedding_dimensions": profile.embedding_dimensions,
+            "has_api_key": profile.has_api_key,
+        }
+    )
+
+
 def sdk_relevance_floor() -> float:
     raw = os.environ.get("ONE_MEMORY_HY_RELEVANCE_FLOOR", "").strip()
     if not raw:
@@ -233,6 +286,7 @@ def build_sdk_config(
     *,
     api_key: str | None,
     data_dir: Path,
+    with_graph: bool = True,
 ) -> MemoryConfig:
     """Map a model snapshot to SDK models, endpoints, backends, and local paths."""
     generation_endpoint, generation_key = _generation_access(profile, api_key)
@@ -249,10 +303,8 @@ def build_sdk_config(
         embedding_key = None
         dimensions = profile.embedding_dimensions or BUILTIN_EMBEDDING_DIMENSIONS
     else:
-        embedding_endpoint = _openai_endpoint(
-            embedding_provider,
-            profile.embedding_base_url or profile.base_url,
-        )
+        # Never the generation endpoint: the collection name hashes this one.
+        embedding_endpoint = _openai_endpoint(embedding_provider, profile.embedding_base_url)
         embedding_key = "ollama" if embedding_provider is ProviderKind.OLLAMA else api_key
         if embedding_provider is ProviderKind.OPENAI_COMPATIBLE and not embedding_key:
             raise HySdkRuntimeError("hy_sdk_embedding_api_key_missing")
@@ -274,6 +326,7 @@ def build_sdk_config(
         "model": profile.model,
         "api_key": generation_key,
         "base_url": generation_endpoint,
+        "extra_headers": opencode_session_header(generation_endpoint),
     }
     # The SDK sends `extra_body` on every chat call, chat and coding/working
     # alike. Without it DeepSeek spent the whole agent_max_tokens on thinking
@@ -304,8 +357,8 @@ def build_sdk_config(
                 "api_key": None,
             },
             "graph_store": {
-                "provider": "kuzu",
-                "db_path": str(root / "graph"),
+                "provider": "kuzu" if with_graph else None,
+                "db_path": str(root / "graph") if with_graph else None,
                 "url": None,
                 "username": None,
                 "password": None,
@@ -382,12 +435,45 @@ def _acquire_client(
     data_dir: Path,
     http_transport_factory: Callable[[], Any] | None,
 ) -> ClientLease:
-    config = build_sdk_config(profile, api_key=api_key, data_dir=data_dir)
+    # The built-in retrieval profile exists so reads work without a model. It
+    # shares the process with the write client, and Kuzu admits one Database
+    # per path, so only the write path owns the graph store: the memory map's
+    # overlay already reads Kuzu through the write client
+    # (sdk_memory_runtime.graph_snapshot). A graph-less read client also stops
+    # the ten-second poll from re-opening a locked store and degrading.
+    use_graph = (
+        graph_store_enabled()
+        and profile.profile_id != BUILTIN_RETRIEVAL_PROFILE_ID
+        and profile.provider_kind is not ProviderKind.LOCAL_ONNX
+    )
+    config = build_sdk_config(
+        profile,
+        api_key=api_key,
+        data_dir=data_dir,
+        with_graph=use_graph,
+    )
     config.http_transport_factory = http_transport_factory
-    mismatch = inspect_graph_width_mismatch(config)
-    if mismatch is not None:
-        raise GraphWidthMismatchError(mismatch)
+    if use_graph:
+        mismatch = inspect_graph_width_mismatch(config)
+        if mismatch is not None:
+            raise GraphWidthMismatchError(mismatch)
     key = data_dir.resolve()
+    cache_key: tuple[object, ...] = (
+        key,
+        profile.profile_id,
+        profile.revision,
+        hashlib.sha256((api_key or "").encode()).hexdigest()[:16],
+        use_graph,
+    )
+    with _CLIENT_LOCK:
+        cached = _CLIENTS.get(cache_key)
+        if cached is not None:
+            cached.references += 1
+            return ClientLease(
+                cached.client,
+                key,
+                release=lambda: _release_client(cache_key, key),
+            )
     runtime = _acquire_runtime(config, key)
     embedding_service: LocalOnnxEmbeddingService | None = None
     if (profile.embedding_provider_kind or profile.provider_kind) is ProviderKind.LOCAL_ONNX:
@@ -396,9 +482,23 @@ def _acquire_client(
         constructing = _CONSTRUCTING.setdefault(key, threading.Lock())
     try:
         with constructing:
+            # Another caller may have finished constructing while this one
+            # waited for the per-home lock; join it instead of opening a
+            # second store.
+            with _CLIENT_LOCK:
+                cached = _CLIENTS.get(cache_key)
+                if cached is not None:
+                    cached.references += 1
+            if cached is not None:
+                _release_runtime(key)
+                return ClientLease(
+                    cached.client,
+                    key,
+                    release=lambda: _release_client(cache_key, key),
+                )
             client = HyMemoryClient(
                 config=config,
-                mode="ultra" if graph_store_enabled() else "pro",
+                mode="ultra" if use_graph else "pro",
                 runtime=runtime,
                 embedding_service=embedding_service,
             )
@@ -409,7 +509,28 @@ def _acquire_client(
         # The constructor's first step configures HY's text log (once per
         # process), so by here it exists whether or not construction succeeded.
         confine_hy_sdk_logging()
-    return ClientLease(client, key)
+    with _CLIENT_LOCK:
+        _CLIENTS[cache_key] = _ClientEntry(client=client, references=1)
+    return ClientLease(client, key, release=lambda: _release_client(cache_key, key))
+
+
+def _release_client(cache_key: tuple[object, ...], data_dir: Path) -> None:
+    """Drop one lease; close the shared client and its runtime on the last one."""
+    client: HyMemoryClient | None = None
+    with _CLIENT_LOCK:
+        entry = _CLIENTS.get(cache_key)
+        if entry is None:
+            return
+        entry.references -= 1
+        if entry.references <= 0:
+            client = entry.client
+            del _CLIENTS[cache_key]
+    if client is None:
+        return
+    try:
+        client.close()
+    finally:
+        _release_runtime(data_dir)
 
 
 def close_all_shared_runtimes() -> None:
@@ -467,7 +588,7 @@ def vector_collection_bases(profile: ModelProfileSnapshot) -> tuple[str, tuple[s
         endpoint, dimensions = None, profile.embedding_dimensions or BUILTIN_EMBEDDING_DIMENSIONS
         legacy_endpoint = "local-onnx"
     else:
-        endpoint = _openai_endpoint(provider, profile.embedding_base_url or profile.base_url)
+        endpoint = _openai_endpoint(provider, profile.embedding_base_url)
         dimensions = profile.embedding_dimensions
         legacy_endpoint = endpoint
     legacy_model = profile.embedding_model or "bge-small-zh-v1.5"

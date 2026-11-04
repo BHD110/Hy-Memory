@@ -6,6 +6,8 @@ and marks remain the property of their respective owners.
 
 - `workbuddy.png`, `codebuddy.png`, `cursor.png`, `claude.png`, `codex.png`:
   approved product-identification exports.
+- `qoder.png`: the 32×32 application icon extracted from the locally installed
+  Alibaba Cloud Qoder CN CLI 1.1.78 (`qoderclicn.exe`).
 - `deepseek.svg`, `hermes.svg`, `openclaw.svg`, `opencode.svg`, `pi.svg`,
   `qwen.svg`: application-identification artwork retained for compatibility
   with the supported source list.

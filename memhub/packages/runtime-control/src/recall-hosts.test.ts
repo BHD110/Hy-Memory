@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { recallHosts } from "./recall-hosts.js";
+import { isHostPresent, recallHosts } from "./recall-hosts.js";
 
 const roots: string[] = [];
 
@@ -10,6 +10,23 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+it("registers Qoder CN against its own home directory", async () => {
+  const root = path.join(tmpdir(), `recall-hosts-qoder-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  const descriptor = (await recallHosts(root, {})).find(
+    (host) => host.hostId === "qoder",
+  );
+  expect(descriptor).toMatchObject({
+    hostId: "qoder",
+    label: "Qoder CN",
+    presencePath: path.join(root, ".qoder-cn"),
+    layout: { hostId: "qoder" },
+  });
+  expect(await isHostPresent(descriptor!)).toBe(false);
+  await mkdir(path.join(root, ".qoder-cn"), { recursive: true });
+  expect(await isHostPresent(descriptor!)).toBe(true);
 });
 
 it("gives every DeepSeek Harness profile a matching unique layout identity", async () => {

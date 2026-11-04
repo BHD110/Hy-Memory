@@ -64,6 +64,7 @@ const SOURCE_HOST: Readonly<Record<string, string>> = {
   "claude-code": "claude-code",
   claude: "claude-code",
   codex: "codex",
+  qoder: "qoder",
   workbuddy: "workbuddy",
   opencode: "opencode",
   "qwen-code": "qwen-code",
@@ -101,12 +102,10 @@ export function installConnectionSetupIpc(options: Options) {
     const resolved = await realpath(options.dataDir);
     const original = await lstat(options.dataDir),
       stat = await lstat(resolved);
-    if (
-      original.isSymbolicLink() ||
-      !stat.isDirectory() ||
-      (stat.mode & 0o777) !== 0o700 ||
-      stat.uid !== process.getuid?.()
-    )
+    const unixOwnershipUnsafe =
+      process.platform !== "win32" &&
+      ((stat.mode & 0o777) !== 0o700 || stat.uid !== process.getuid?.());
+    if (original.isSymbolicLink() || !stat.isDirectory() || unixOwnershipUnsafe)
       fail("storage_unavailable");
     const value = {
       path: resolved,

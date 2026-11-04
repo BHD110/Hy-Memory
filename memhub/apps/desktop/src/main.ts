@@ -130,8 +130,14 @@ import {
 import { resolveTrialProfile } from "./trial-profile";
 import { createWindowOptions } from "./window-options";
 
+const localWindowsBundle = process.platform === "win32" && !app.isPackaged && !process.env.ONE_MEMORY_WEB_URL;
+const useBundledWeb = app.isPackaged || localWindowsBundle;
 const developmentUrl =
   process.env.ONE_MEMORY_WEB_URL ?? "http://127.0.0.1:5173";
+// An unpackaged Windows build uses the same profile on a double-click and at login.
+if (localWindowsBundle && !process.env.ONE_MEMORY_DATA_DIR && process.env.LOCALAPPDATA) {
+  process.env.ONE_MEMORY_DATA_DIR = path.join(process.env.LOCALAPPDATA, "MemHub-Windows", "Data");
+}
 const previewProductName = (name: string) =>
   name === "MemHub Preview" || name === "One Memory Preview";
 let coreSupervisor: CoreSupervisor | null = null;
@@ -263,7 +269,7 @@ function attachWindowGuards(window: BrowserWindow): void {
   window.webContents.on("will-navigate", (event, targetUrl) => {
     if (
       !isAllowedNavigation(targetUrl, {
-        packaged: app.isPackaged,
+        packaged: useBundledWeb,
         developmentUrl,
       })
     ) {
@@ -292,8 +298,11 @@ let appProtocolInstalled = false;
 /** Serve the packaged web bundle. Also the first thing the startup window
  *  needs, so it is idempotent: the protocol may only be claimed once. */
 function installPackagedWebProtocol(): void {
-  if (!app.isPackaged || appProtocolInstalled) return;
-  installAppProtocol(path.join(process.resourcesPath, "web"), {
+  if (!useBundledWeb || appProtocolInstalled) return;
+  const webRoot = localWindowsBundle
+    ? path.resolve(app.getAppPath(), "../web/dist")
+    : path.join(process.resourcesPath, "web");
+  installAppProtocol(webRoot, {
     // Preferences are open by now: beforeNativeUi runs before this window.
     startupScreen: () => {
       let locale: GuiLocale = "zh-CN";
@@ -316,7 +325,7 @@ function installPackagedWebProtocol(): void {
  * race the handlers `initialize` registers.
  */
 async function createStartupWindow(isQuitting: () => boolean): Promise<void> {
-  if (!app.isPackaged) return;
+  if (!useBundledWeb) return;
   installPackagedWebProtocol();
   const window = newWindow();
   startupWindow = window;
@@ -342,7 +351,7 @@ async function revealStartupWindow(isQuitting: () => boolean): Promise<void> {
   });
   try {
     await window.loadURL(
-      app.isPackaged ? `${APP_ORIGIN}/index.html` : developmentUrl,
+      useBundledWeb ? `${APP_ORIGIN}/index.html` : developmentUrl,
     );
   } catch (error) {
     if (!window.isDestroyed()) window.destroy();
@@ -378,7 +387,7 @@ async function createWindow(isQuitting: () => boolean): Promise<void> {
 
   try {
     await window.loadURL(
-      app.isPackaged ? `${APP_ORIGIN}/index.html` : developmentUrl,
+      useBundledWeb ? `${APP_ORIGIN}/index.html` : developmentUrl,
     );
   } catch (error) {
     // A failed hidden window must not block a later explicit reopen attempt.
@@ -389,7 +398,7 @@ async function createWindow(isQuitting: () => boolean): Promise<void> {
 
 async function initialize(isQuitting: () => boolean): Promise<void> {
   installDenyAllPermissionPolicy(session.defaultSession);
-  const corePort = app.isPackaged
+  const corePort = useBundledWeb
     ? await findAvailablePort()
     : developmentCorePort();
   const brokerPort = app.isPackaged ? undefined : developmentBrokerPort();
@@ -414,7 +423,11 @@ async function initialize(isQuitting: () => boolean): Promise<void> {
   runtimeDataDir = dataDir;
   const hostIntegrationEnabled =
     process.env.ONE_MEMORY_DATA_DIR === undefined ||
-    isCanonicalDailyDataDir(app.getPath("home"), dataDir);
+    isCanonicalDailyDataDir(app.getPath("home"), dataDir) ||
+    (process.platform === "win32" &&
+      process.env.LOCALAPPDATA !== undefined &&
+      path.normalize(dataDir) ===
+        path.normalize(path.join(process.env.LOCALAPPDATA, "MemHub-Windows", "Data")));
   const diagnostics = new DiagnosticLogger({ dataDir, service: "desktop" });
   const runtimeDiagnostics = new DiagnosticLogger({
     dataDir,
@@ -552,7 +565,7 @@ async function initialize(isQuitting: () => boolean): Promise<void> {
       stable?.captureCommand ??
       path.join(
         path.resolve(app.getAppPath(), "../.."),
-        "apps/core/.venv/bin",
+        process.platform === "win32" ? "apps/core/.venv/Scripts" : "apps/core/.venv/bin",
         process.platform === "win32" ? "one-memory.exe" : "one-memory",
       ),
     hermesProviderSource: path.join(
@@ -768,7 +781,7 @@ async function initialize(isQuitting: () => boolean): Promise<void> {
     const sender = new URL(senderUrl);
     const isAppRenderer =
       sender.protocol === "one-memory:" && sender.host === "app";
-    if (!isAppRenderer && sender.origin !== new URL(developmentUrl).origin) {
+    if (!isAppRenderer && (useBundledWeb || sender.origin !== new URL(developmentUrl).origin)) {
       throw new Error("Renderer origin is not allowed");
     }
     return coreSupervisor?.apiToken;
@@ -781,7 +794,7 @@ async function initialize(isQuitting: () => boolean): Promise<void> {
     const sender = new URL(senderUrl);
     const isAppRenderer =
       sender.protocol === "one-memory:" && sender.host === "app";
-    if (!isAppRenderer && sender.origin !== new URL(developmentUrl).origin) {
+    if (!isAppRenderer && (useBundledWeb || sender.origin !== new URL(developmentUrl).origin)) {
       throw new Error("Renderer origin is not allowed");
     }
     if (!coreSupervisor) {
@@ -1779,7 +1792,7 @@ function assertAllowedRenderer(senderUrl: string | undefined): void {
   const sender = new URL(senderUrl);
   const isAppRenderer =
     sender.protocol === "one-memory:" && sender.host === "app";
-  if (!isAppRenderer && sender.origin !== new URL(developmentUrl).origin) {
+  if (!isAppRenderer && (useBundledWeb || sender.origin !== new URL(developmentUrl).origin)) {
     throw new Error("Renderer origin is not allowed");
   }
 }
@@ -1800,7 +1813,7 @@ function assertTrustedWindow(window: BrowserWindow): void {
     url.username ||
     url.password ||
     !isAllowedNavigation(frame.url, {
-      packaged: app.isPackaged,
+      packaged: useBundledWeb,
       developmentUrl,
     })
   )

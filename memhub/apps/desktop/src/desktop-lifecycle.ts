@@ -104,7 +104,7 @@ export function startDesktopLifecycle(options: LifecycleOptions): void {
     open();
   };
   const allClosed = () => {
-    if (options.platform !== "darwin") app.quit();
+    if (options.platform !== "darwin" && options.platform !== "win32") app.quit();
   };
   const beforeQuit = (event: { preventDefault(): void }) => {
     quitting = true;

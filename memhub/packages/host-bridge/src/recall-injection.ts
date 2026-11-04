@@ -128,7 +128,7 @@ export interface InjectionResult {
   trigger: AutoRecallDecision | null;
 }
 
-const SOURCES = new Set(["workbuddy"]);
+const SOURCES = new Set(["workbuddy", "qoder"]);
 const DENIED = new Set([
   "host_credential_unavailable",
   "host_authorization_required",
@@ -226,7 +226,8 @@ export async function runRecallInjection(
     if (query !== null) {
       trigger = autoRecallDecision(
         query,
-        turnId(payload, environment) !== null,
+        turnId(payload, environment) !== null ||
+          (sourceId === "qoder" && event === "UserPromptSubmit" && hostSessionId !== null),
       );
       if (trigger.action !== "search") {
         query = null;

@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from one_memory.hy_sdk_types import HySdkMemoryRecord
+from one_memory.hy_sdk_types import HySdkMemoryRecord, HySdkReadError
 from one_memory.memory_governance import GovernedMemory, MemoryStatus
 from one_memory.semantic_deadline import (
     SemanticMemoryHit,
@@ -248,6 +248,11 @@ class SdkRecallTarget:
                 truncated_by = TruncationBudget.TIMEOUT
                 unexamined = len(semantic_hits) - index
                 break
+            except HySdkReadError:
+                # One stored record whose shape this build cannot map must not
+                # fail the whole recall: drop that hit and keep the rest. The
+                # stricter page/library reads still skip it and count it.
+                continue
             if memory is None or memory.status != "active":
                 continue
             formatted = (

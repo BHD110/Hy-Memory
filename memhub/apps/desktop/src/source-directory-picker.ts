@@ -127,4 +127,5 @@ const sourceLabels: Record<string, string> = {
   cursor: "Cursor",
   "claude-code": "Claude Code",
   codex: "Codex",
+  qoder: "Qoder CN",
 };

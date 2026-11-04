@@ -21,6 +21,7 @@ import {
   type HostReadTool,
   isPluginCacheBookkeeping,
   readHostCredentialFile,
+  windowsPrivateStorage,
 } from "@one-memory/host-bridge";
 import {
   applyRecallInstall,
@@ -134,9 +135,9 @@ export class HostPermissions {
     runtime: RecallRuntime,
     options: { syncHookAssetsDirectory?: string } = {},
   ): Promise<HostPermissions> {
-    if (process.platform === "win32" || typeof process.getuid !== "function") {
-      throw new Error("host_permission_platform_unsupported");
-    }
+    // Windows has per-user ACLs instead of POSIX uid/mode bits.  The desktop
+    // data root is already under the current user's LocalAppData; use the
+    // same file store there and apply the platform-neutral shape checks below.
     dataDir = path.resolve(dataDir);
     return storageGuard(async () => {
       await checkDataRoot(dataDir);
@@ -918,6 +919,7 @@ export class HostPermissions {
 
   private async checkStorage(): Promise<void> {
     await storageGuard(async () => {
+      await windowsPrivateStorage(this.directory);
       await checkDataRoot(this.dataDir);
       const current = await lstat(this.directory);
       checkPrivate(current, true);
@@ -1278,6 +1280,11 @@ function permissionInput(
 
 async function checkDataRoot(directory: string): Promise<void> {
   const info = await lstat(directory);
+  if (process.platform === "win32") {
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error("host_permission_storage_unsafe");
+    return;
+  }
   if (
     !info.isDirectory() ||
     info.uid !== process.getuid?.() ||
@@ -1308,6 +1315,11 @@ async function checkDataRoot(directory: string): Promise<void> {
 }
 
 function checkPrivate(info: Stats, directory: boolean): void {
+  if (process.platform === "win32") {
+    if (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)
+      throw new Error("host_permission_storage_unsafe");
+    return;
+  }
   if (
     (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1) ||
     info.uid !== process.getuid?.() ||
@@ -1328,16 +1340,20 @@ async function optionalStat(file: string): Promise<Stats | null> {
 async function createPrivateDirectory(directory: string): Promise<boolean> {
   try {
     await mkdir(directory, { mode: 0o700 });
+    await windowsPrivateStorage(directory, true);
     checkPrivate(await lstat(directory), true);
     return true;
   } catch (error) {
     if (!isObject(error) || error.code !== "EEXIST") throw error;
+    await windowsPrivateStorage(directory);
     checkPrivate(await lstat(directory), true);
     return false;
   }
 }
 
 async function privateRead(file: string): Promise<string> {
+  await windowsPrivateStorage(path.dirname(file));
+  await windowsPrivateStorage(file);
   checkPrivate(await lstat(path.dirname(file)), true);
   checkPrivate(await lstat(file), false);
   const handle = await open(
@@ -1356,6 +1372,7 @@ async function privateRead(file: string): Promise<string> {
 }
 
 async function privateWrite(file: string, content: string): Promise<void> {
+  await windowsPrivateStorage(path.dirname(file));
   checkPrivate(await lstat(path.dirname(file)), true);
   const current = await optionalStat(file);
   if (current !== null) checkPrivate(current, false);
@@ -1374,6 +1391,7 @@ async function privateWrite(file: string, content: string): Promise<void> {
     await handle.sync();
     await handle.close();
     await rename(temporary, file);
+    if (process.platform === "win32") return;
     const directory = await open(
       path.dirname(file),
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -1420,6 +1438,6 @@ async function storageGuard<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (error instanceof HostGrantError) throw error;
-    throw new Error("host_permission_storage_unsafe");
+    throw new Error("host_permission_storage_unsafe", { cause: error });
   }
 }

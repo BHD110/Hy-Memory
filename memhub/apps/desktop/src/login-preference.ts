@@ -12,11 +12,28 @@ export interface LoginPreference {
   status: string;
 }
 
+async function windowsLoginItem() {
+  const { app } = await import("electron");
+  return {
+    app,
+    options: {
+      name: "MemHub",
+      path: process.execPath,
+      args: app.isPackaged ? ["--background"] : [app.getAppPath(), "--background"],
+    },
+  };
+}
+
 export async function readLoginPreference(
   dataDir: string,
   platform: NodeJS.Platform,
   supported: boolean,
 ): Promise<LoginPreference> {
+  if (platform === "win32") {
+    const { app, options } = await windowsLoginItem();
+    const { openAtLogin: enabled } = app.getLoginItemSettings(options);
+    return { supported: true, enabled, status: enabled ? "enabled" : "disabled" };
+  }
   if (platform !== "darwin" || !supported) {
     return { supported: false, enabled: false, status: "unsupported" };
   }
@@ -56,6 +73,11 @@ export async function setLoginPreference(
     input.userConfirmed !== true
   ) {
     throw Error("login_preference_confirmation_required");
+  }
+  if (platform === "win32") {
+    const { app, options } = await windowsLoginItem();
+    app.setLoginItemSettings({ ...options, openAtLogin: input.openAtLogin });
+    return readLoginPreference(dataDir, platform, supported);
   }
   if (platform !== "darwin" || !supported) {
     throw Error("login_preference_unsupported");

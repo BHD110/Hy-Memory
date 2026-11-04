@@ -540,10 +540,14 @@ def _structured_request(
         }
     if profile.disable_thinking:
         attach_disable_thinking(profile, payload)
+    from one_memory.opencode_compat import opencode_session_header
+
+    headers = _headers(profile.provider_kind, secret)
+    headers.update(opencode_session_header(base_url))
     return (
         "POST",
         f"{base_url}/chat/completions",
-        _headers(profile.provider_kind, secret),
+        headers,
         payload,
     )
 
@@ -564,7 +568,7 @@ def _embedding_request(
     secret: str | None,
 ) -> tuple[str, str, dict[str, str], dict[str, object]]:
     provider = profile.embedding_provider_kind or profile.provider_kind
-    base_url = (profile.embedding_base_url or profile.base_url or "").rstrip("/")
+    base_url = (profile.embedding_base_url or "").rstrip("/")
     if provider is ProviderKind.OLLAMA:
         return (
             "POST",

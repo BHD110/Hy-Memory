@@ -32,6 +32,7 @@ def test_catalog_resolves_defaults_and_marks_environment_overrides(tmp_path) -> 
         "cursor",
         "claude-code",
         "codex",
+        "qoder",
         "pi",
         "qwenwork",
         # Eleventh, not a rename of the tenth: the plan's list names Qwen Work,
@@ -422,7 +423,7 @@ def test_exports_are_snapshots_without_changing_native_source_capabilities(tmp_p
         assert source.descriptor.capabilities.sync_completeness.value == "one_time_snapshot"
         assert not source.descriptor.capabilities.can_append
     native = {key: value for key, value in catalog.items() if key not in exports}
-    assert len(native) == 11
+    assert len(native) == 12
     assert all(
         source.descriptor.capabilities.sync_completeness.value == "additions_only"
         for source in native.values()

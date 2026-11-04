@@ -1,0 +1,55 @@
+[
+  {
+    "test": "Core rejects invalid token",
+    "status": "passed"
+  },
+  {
+    "test": "Real model structured-output and embedding probe",
+    "status": "passed"
+  },
+  {
+    "test": "Model activation and stale revision rejection",
+    "status": "passed"
+  },
+  {
+    "test": "Upload preview commit and import accepted",
+    "status": "passed",
+    "kind": "raw_conversation"
+  },
+  {
+    "test": "Upload preview commit and import accepted",
+    "status": "passed",
+    "kind": "memory_content"
+  },
+  {
+    "test": "Conversation extraction and memory-content ingestion",
+    "status": "passed",
+    "completed": 2
+  },
+  {
+    "test": "Search raw",
+    "status": "passed",
+    "hits": 1
+  },
+  {
+    "test": "Search memory",
+    "status": "passed",
+    "hits": 2
+  },
+  {
+    "test": "Generated answer grounded in imported memory",
+    "status": "passed"
+  },
+  {
+    "test": "Manual memory request is idempotent",
+    "status": "passed"
+  },
+  {
+    "test": "Memory update readback and deletion",
+    "status": "passed"
+  },
+  {
+    "test": "Library and graph endpoints",
+    "status": "passed"
+  }
+]

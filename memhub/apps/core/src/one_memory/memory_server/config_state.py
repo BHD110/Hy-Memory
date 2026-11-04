@@ -176,6 +176,17 @@ class ConfigStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(temporary, 0o600)
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+
+                move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+                move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+                move.restype = wintypes.BOOL
+                # Replace the file atomically and wait for the move to reach disk.
+                if not move(str(temporary), str(self.path), 0x1 | 0x8):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return
             os.replace(temporary, self.path)
             directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:

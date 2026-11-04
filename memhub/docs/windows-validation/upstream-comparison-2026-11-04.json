@@ -1,0 +1,480 @@
+{
+  "upstream": "dd13c551c4c6c37bef4d487d267f956ccf0ec99f",
+  "base": "988667cd876fb80bee6d618482f78a2fe426402c",
+  "commits": [
+    {
+      "commit": "e7d82ee",
+      "title": "fix(web): expand settings controls to content width",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "265a22d",
+      "title": "fix(memhub): show lite raw conversations by turn",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "93d0c64",
+      "title": "style(memhub): format graph topic changes",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "1589ae3",
+      "title": "fix(memhub): make topic nodes hover-only",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "38ad229",
+      "title": "fix(memhub): clarify memory mode switch effects",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "413b903",
+      "title": "fix(memhub): inline model configuration panels",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "0953c5a",
+      "title": "fix(memhub): keep durable write drain alive",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "470ea44",
+      "title": "fix(memhub): keep home status copy compact",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "42b577f",
+      "title": "chore(release): bump MemHub build to 40",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "e32dc98",
+      "title": "feat(memhub): redesign onboarding mode setup",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "ba2f647",
+      "title": "feat(memhub): project home by memory mode",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "1429ba2",
+      "title": "fix(memhub): close model center settings gaps",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "4e7d752",
+      "title": "feat(memhub): add lite manual raw input",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "fb13a6f",
+      "title": "fix(memhub): keep mode-specific memory views consistent",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "6ff8b3a",
+      "title": "fix(memhub): simplify topic node details",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "17441d3",
+      "title": "fix(memhub): harden settings state recovery",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "89d29c9",
+      "title": "feat(memhub): redesign memory mode settings",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "5271bdd",
+      "title": "fix(memhub): preserve raw conversations in lite mode",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "8cee64c",
+      "title": "chore(release): bump MemHub build number to 39",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "b36452d",
+      "title": "fix(memhub): reset mode state and satisfy lint",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "e58a7c0",
+      "title": "fix(memhub): polish mode selector and raw transitions",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "1663c94",
+      "title": "fix(memhub): align model center with R6 visuals",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "fba9d8c",
+      "title": "fix(memhub): align lite and mode settings UI",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "2155c4c",
+      "title": "feat(memhub): add safe model center",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "18e2fca",
+      "title": "fix(memhub): harden mode startup recovery and search retry",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "88feb0a",
+      "title": "feat(memhub): add memory mode app lifecycle",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "8277aae",
+      "title": "chore(release): bump MemHub build number to 38",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "76c459e",
+      "title": "fix(memhub): a failed SDK write keeps the SDK's cause as its error code",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "b864e0b",
+      "title": "chore(memhub): pin hy-memory 2.0.13; MemHub 1.0.6 changelog",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "6c235ef",
+      "title": "release: hy-memory 2.0.13",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "4746681",
+      "title": "fix(sdk): coding reconcile model failures fail the write, nothing half-applied",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "a218a92",
+      "title": "fix(memhub): memory writes retry themselves; a broken model provider pauses the queue instead of losing jobs",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "6845adf",
+      "title": "fix(memhub): WAL stays bounded, disabled sources suspend their jobs, recall no longer starves behind stuck writes",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "76098cf",
+      "title": "fix(sdk): a model failure during a write reports failure and stores nothing",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "ce9801b",
+      "title": "fix(memhub): resolve a caller's Hermes root through the grant's own helper",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "576d9bf",
+      "title": "fix(memhub): multi-user responses echo user_id, cross-user delete answers 404, Hermes profiles isolated for any root",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "a653bd4",
+      "title": "feat(memhub): intention dedup switch in memory features",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "07b426b",
+      "title": "chore(memhub): pin hy-memory 2.0.12",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "675cc30",
+      "title": "release: hy-memory 2.0.12",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "384c747",
+      "title": "fix(memhub): adopt a newer runtime silently and let quit follow the service state",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "a88d227",
+      "title": "fix(memhub): one DeepSeek Harness switch for every detected profile",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "059125a",
+      "title": "fix(memhub): one runtime; App quit never stops the background service, stops every runtime when it is disabled",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "0d0cefb",
+      "title": "fix(core): leave no cursor on a DeepSeek Harness session it refuses",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "be8cf02",
+      "title": "test(core): pin DeepSeek Harness text tool output and session name boundary",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "d0a4fd6",
+      "title": "fix(memhub): pass every UI language to the SDK, zh-Hans included",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "aae877b",
+      "title": "fix(memhub): accept only a full 40-character commit at the packaged-runtime boundary",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "ef5ff06",
+      "title": "fix(sdk): intention dedup switch also gates write-batch dedup",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "7eb38aa",
+      "title": "fix(core): import versioned DeepSeek Harness session files",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "2624228",
+      "title": "feat(sdk): configurable intention dedup (on by default, unchanged behaviour)",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "aa63362",
+      "title": "docs: MemHub 1.0.6 news and changelog",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "9459a11",
+      "title": "chore(release): MemHub 1.0.6, build 37",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "7a2ff2f",
+      "title": "build(memhub): pin hy-memory 2.0.11 and set the SDK language directly",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "2b75adc",
+      "title": "release: hy-memory 2.0.11",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "e786657",
+      "title": "feat(memhub): 11 display languages; non-zh/en choices set the SDK prompt language",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "16da11f",
+      "title": "feat(sdk): prompts in 11 languages and an explicit language option",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "7df371b",
+      "title": "fix(memhub): make the embedding switch work on real graphs and SDK services",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "f38c370",
+      "title": "feat(memhub-cli): embedding switch commands and the App contract",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "e87d630",
+      "title": "feat(memhub): switch the embedding model safely in Core",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "7a78fca",
+      "title": "build(memhub): pin hy-memory 2.0.10",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "3742b3e",
+      "title": "feat(memhub): configurable SDK retrieval and extraction features",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "ba6248b",
+      "title": "docs: capitalise the 2.0.10 changelog entry",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "6cad02b",
+      "title": "release: hy-memory 2.0.10",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "4e1748f",
+      "title": "feat(memhub): memory mode (lite/pro/ultra), evolve and its nightly schedule",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "302fd30",
+      "title": "feat(sdk): re-embed vector stores and the graph into a new embedding space",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "8d0a069",
+      "title": "feat(memhub): expose SDK search, layer, raw and profile-version surface",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "2ab0429",
+      "title": "fix(memhub): the embedding endpoint no longer follows the generation base_url",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "3772a69",
+      "title": "feat(sdk): store raw conversations already trimmed; history concatenates without re-trimming",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "80d3b55",
+      "title": "fix(memhub): reads use the active profile's embedding space",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "b5ec086",
+      "title": "fix(memhub): migrate without a model profile and check readback against the pre-migration store",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "47e938d",
+      "title": "fix(memhub): drop grant triggers that read a table the cutover dropped",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "7e9f0d9",
+      "title": "fix(memhub): another user's memory id answers like a missing one",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "0ff4538",
+      "title": "feat(memhub-cli): --user-id for memory commands, connect a Hermes profile",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "a970978",
+      "title": "feat(memhub): multi-user Core — user_id on memory APIs, per-user Hermes grants",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "c1e5916",
+      "title": "build(memhub): pin hy-memory 2.0.9",
+      "decision": "skipped",
+      "reason": "Feature/release/docs or fix for newer mode/model-center/multi-user/service flows absent from this Windows port"
+    },
+    {
+      "commit": "b1b3e0a",
+      "title": "fix(sdk): drop the user-turn filter for basic_info",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "53507c7",
+      "title": "fix(memhub): only call non-JSON diagnostic lines damaged in `memhub logs`",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "5a1d252",
+      "title": "fix(memhub): drop Hermes gateway notices and unwrap relayed messages on import",
+      "decision": "backported",
+      "reason": "Windows shared code fix or companion regression tests"
+    },
+    {
+      "commit": "8895fea",
+      "title": "release: hy-memory 2.0.9",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    },
+    {
+      "commit": "78882f3",
+      "title": "fix(sdk): placeholder values never overwrite the basic profile",
+      "decision": "sdk-2.0.13",
+      "reason": "Covered by the pinned SDK upgrade; no new desktop feature enabled"
+    }
+  ]
+}

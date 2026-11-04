@@ -70,6 +70,7 @@ export type BrokerClientErrorCode =
   | "memory_add_conflict"
   | "memory_add_invalid"
   | "broker_request_failed"
+  | "broker_timeout"
   | "broker_unavailable";
 
 const CLIENT_MESSAGES: Record<BrokerClientErrorCode, string> = {
@@ -100,6 +101,10 @@ const CLIENT_MESSAGES: Record<BrokerClientErrorCode, string> = {
   // `broker_unavailable` now means only what it says: nothing answered.
   broker_request_failed:
     "MemHub is running, but this request failed. Check MemHub for the reason.",
+  // A request that got no answer in time is not a MemHub that is down: the
+  // broker or Core accepted it and is still busy (#231). Telling the user to
+  // start MemHub sent them to restart a healthy Runtime.
+  broker_timeout: "MemHub is running, but did not respond in time.",
   broker_unavailable: "MemHub is not running or its broker is unavailable",
 };
 
@@ -123,14 +128,15 @@ export async function readHostCredentialFile(
 ): Promise<string> {
   try {
     if (
-      process.platform === "win32" ||
-      typeof process.getuid !== "function" ||
+      (process.platform !== "win32" && typeof process.getuid !== "function") ||
       typeof targetPath !== "string" ||
       !path.isAbsolute(targetPath) ||
       targetPath.includes("\0")
     ) {
       throw new BrokerClientError("host_credential_unavailable");
     }
+    await windowsPrivateStorage(path.dirname(targetPath));
+    await windowsPrivateStorage(targetPath);
     checkPrivateCredentialNode(await lstat(path.dirname(targetPath)), true);
     checkPrivateCredentialNode(await lstat(targetPath), false);
     const handle = await open(
@@ -171,6 +177,11 @@ export async function readHostCredentialFile(
 }
 
 function checkPrivateCredentialNode(info: Stats, directory: boolean): void {
+  if (process.platform === "win32") {
+    if (info.isSymbolicLink() || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1))
+      throw new BrokerClientError("host_credential_unavailable");
+    return;
+  }
   if (
     (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1) ||
     info.uid !== process.getuid?.() ||
@@ -318,12 +329,13 @@ export async function recallThroughBroker(
   discoveryPath: string,
   request: RecallRequest,
   options?: BrokerClientOptions,
+  timeout = 20_000,
 ): Promise<RecallReceipt> {
   return postThroughBroker(
     discoveryPath,
     "recall",
     { ...request, timeout_ms: request.timeout_ms ?? HOST_CONTEXT_TIMEOUT_MS },
-    20_000,
+    timeout,
     options,
   );
 }
@@ -461,6 +473,8 @@ async function postThroughBroker<T>(
               : "host_authorization_required",
         );
       }
+      if (error.response?.status === 504 || isTimeout(error))
+        throw new BrokerClientError("broker_timeout");
       // Anything the broker actually answered means it is running, however
       // badly the request went. Only a failure to reach it says otherwise.
       if (error.response) throw new BrokerClientError("broker_request_failed");
@@ -468,6 +482,11 @@ async function postThroughBroker<T>(
     // Axios errors include Authorization in config/request: never retain cause.
     throw new BrokerClientError("broker_unavailable");
   }
+}
+
+/** A connection that was accepted and then not answered in time. */
+function isTimeout(error: { code?: string }): boolean {
+  return error.code === "ECONNABORTED" || error.code === "ETIMEDOUT";
 }
 
 /** Late credential/discovery completion cannot dispatch after a cancelled wait. */
@@ -492,3 +511,4 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     }
   });
 }
+import { windowsPrivateStorage } from "./windows-private-storage.js";

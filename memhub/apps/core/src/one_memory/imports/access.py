@@ -80,6 +80,8 @@ class AuthorizedSourceFile:
 
 
 def _open_relative_file(source: AuthorizedSourceFile) -> BinaryIO:
+    if os.name == "nt":
+        return _open_windows_file(source)
     if not _supports_descriptor_relative_open():
         raise SourceAccessError(SourceAccessErrorCode.SOURCE_UNAVAILABLE)
     relative_parts = source.relative_path.parts
@@ -224,6 +226,53 @@ def _open_relative_file(source: AuthorizedSourceFile) -> BinaryIO:
             except OSError:
                 if failure is None:
                     raise SourceAccessError(SourceAccessErrorCode.SOURCE_UNAVAILABLE) from None
+
+
+def _open_windows_file(source: AuthorizedSourceFile) -> BinaryIO:
+    """Check the opened Windows handle itself before returning any source bytes."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    relative = source.relative_path
+    if relative.anchor or not relative.parts or ".." in relative.parts:
+        raise SourceAccessError(SourceAccessErrorCode.PATH_OUTSIDE_ROOT)
+    target = source.root / relative
+    stream = None
+    try:
+        _check_root_identity(source.requested_root or source.root, source.root_identity)
+        _reject_symlink_components(source.root, relative)
+        stream = target.open("rb")
+        final_name = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+        final_name.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+        final_name.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        count = final_name(msvcrt.get_osfhandle(stream.fileno()), buffer, len(buffer), 0)
+        if not 0 < count < len(buffer):
+            raise SourceAccessError(SourceAccessErrorCode.SOURCE_UNAVAILABLE)
+        # Convert the extended-length DOS/UNC path returned for the open handle.
+        name = buffer.value
+        if name.startswith("\\\\?\\UNC\\"):
+            name = "\\\\" + name[8:]
+        else:
+            name = name.removeprefix("\\\\?\\")
+        if Path(name) != target:
+            raise SourceAccessError(SourceAccessErrorCode.PATH_OUTSIDE_ROOT)
+        details = os.fstat(stream.fileno())
+        if not stat.S_ISREG(details.st_mode) or not _same_file(
+            details, file_identity=source.file_identity, changed_ns=source.changed_ns
+        ):
+            raise SourceAccessError(SourceAccessErrorCode.SOURCE_IDENTITY_CHANGED)
+        if details.st_size > source.max_bytes:
+            raise SourceAccessError(SourceAccessErrorCode.FILE_TOO_LARGE)
+        _check_root_identity(source.requested_root or source.root, source.root_identity)
+        result, stream = stream, None
+        return result
+    except OSError:
+        raise SourceAccessError(SourceAccessErrorCode.SOURCE_UNAVAILABLE) from None
+    finally:
+        if stream is not None:
+            stream.close()
 
 
 def _supports_descriptor_relative_open() -> bool:

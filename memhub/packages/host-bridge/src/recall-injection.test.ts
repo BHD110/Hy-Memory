@@ -16,6 +16,7 @@ import path from "node:path";
 import type { RecallHit } from "@one-memory/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostGrantStore } from "./host-grants.js";
+import { windowsPrivateStorage } from "./windows-private-storage.js";
 import { RecallBroker } from "./recall-broker.js";
 import {
   BLOCK_CHARACTERS,
@@ -64,6 +65,7 @@ interface RawMessage {
 
 async function fixture(
   options: {
+    hostId?: string;
     hits?: RecallHit[];
     raw?: RawMessage[];
     coreDelayMs?: number;
@@ -75,7 +77,7 @@ async function fixture(
   const root = await mkdtemp(path.join(os.tmpdir(), "om-inject-"));
   roots.push(root);
   const store = await HostGrantStore.initialize(path.join(root, "grants"));
-  const issued = await store.createInstallation({ hostId: "workbuddy" });
+  const issued = await store.createInstallation({ hostId: options.hostId ?? "workbuddy" });
   const approved = await store.approveGrants({
     installationId: issued.receipt.installationId,
     expectedRevision: issued.receipt.revision,
@@ -84,6 +86,7 @@ async function fixture(
   });
   const credentialFile = path.join(root, "credential", "host-credential");
   await mkdir(path.dirname(credentialFile), { mode: 0o700 });
+  if (process.platform === "win32") await windowsPrivateStorage(path.dirname(credentialFile), true);
   await writeFile(credentialFile, `${issued.secret}\n`, { mode: 0o600 });
   const calls: CoreCall[] = [];
   const core = createServer((request, response: ServerResponse) => {
@@ -233,6 +236,22 @@ async function diagnostics(dataDir: string, minimumLines = 1) {
 }
 
 describe("WorkBuddy recall injection hook", () => {
+  it("Qoder CN recalls from the documented session and prompt payload without turn_id", async () => {
+    const {env, calls, store, approved} = await fixture({hostId: "qoder", hits: [hit(0, "用户喜欢绿色")]});
+    const input = prompt("上次我喜欢什么颜色", {turn_id: undefined});
+    const result = await runRecallInjection("qoder", input, env);
+    expect(result.outcome).toBe("injected");
+    expect(context(result.stdout)).toContain("用户喜欢绿色");
+    expect(calls).toHaveLength(1);
+    const ordinary = await runRecallInjection("qoder", prompt("你好", {turn_id: undefined}), env);
+    expect(ordinary.stdout).toBe("");
+    expect(calls).toHaveLength(1);
+    await store.revoke({installationId: approved.installationId, expectedRevision: approved.revision});
+    const denied = await runRecallInjection("qoder", input, env);
+    expect(denied.outcome).toBe("denied");
+    expect(denied.stdout).toBe("");
+    expect(calls).toHaveLength(1);
+  }, 60000);
   it("injects at most eight items inside the history-only tag", async () => {
     const hits = Array.from({ length: 10 }, (_, index) =>
       hit(index, `记忆第 ${index} 条：用户偏好 ${index}`),

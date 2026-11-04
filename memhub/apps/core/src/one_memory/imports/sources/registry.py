@@ -49,6 +49,10 @@ from one_memory.imports.sources.qwenwork import (
     QWENWORK_DESCRIPTOR,
     create_qwenwork_adapter,
 )
+from one_memory.imports.sources.qoder_cn import (
+    QODER_CN_DESCRIPTOR,
+    create_qoder_cn_adapter,
+)
 from one_memory.imports.sources.workbuddy import (
     WORKBUDDY_DESCRIPTOR,
     create_workbuddy_adapter,
@@ -142,6 +146,16 @@ def build_source_catalog(
                 translated_homes=(".tcodex", ".tclaude"),
             ),
             create_adapter=create_codex_adapter,
+            capabilities=with_recall_install_target(
+                polling_live_sync_capabilities(verification=VerificationLevel.REAL_REPLAYED)
+            ),
+        ),
+        SourceRegistration(
+            descriptor=QODER_CN_DESCRIPTOR,
+            candidate=SourceRootCandidate(
+                path=home / ".qoder-cn", kind=RootCandidateKind.DEFAULT
+            ),
+            create_adapter=create_qoder_cn_adapter,
             capabilities=with_recall_install_target(
                 polling_live_sync_capabilities(verification=VerificationLevel.REAL_REPLAYED)
             ),

@@ -1004,9 +1004,10 @@ describe("OnboardingFlow S1.3", () => {
       const trigger = choice("Cursor");
       await user.click(trigger);
       const modal = screen.getByRole("dialog", { name: "确认自定义位置" });
-      const background = screen
-        .getByRole("button", { name: "重新检测位置", hidden: true })
-        .closest(".onboarding-r6-discovery");
+      const background = Array.from(document.body.children).find((node) =>
+        node.contains(trigger),
+      );
+      expect(modal.parentElement?.parentElement).toBe(document.body);
       expect(background).toHaveProperty("inert", true);
       expect(modal.contains(document.activeElement)).toBe(true);
       expect(trigger.checked).toBe(false);

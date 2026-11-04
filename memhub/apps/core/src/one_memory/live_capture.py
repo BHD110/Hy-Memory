@@ -37,6 +37,7 @@ from one_memory.imports.sources.parsing import (
     unwrap_host_envelope,
 )
 from one_memory.imports.sources.pi import _is_automated_session
+from one_memory.imports.sources.qoder_cn import parse_qoder_record
 from one_memory.imports.sources.workbuddy import _is_scheduled_automation, parse_workbuddy_record
 from one_memory.imports.storage import EvidenceStore
 
@@ -48,6 +49,7 @@ CAPTURE_SOURCES = frozenset(
         "cursor",
         "pi",
         "qwen-code",
+        "qoder",
         "qwenwork",
         "hermes",
         "deepseek-harness",
@@ -72,6 +74,7 @@ _FILE_FALLBACK = {
     "workbuddy": parse_workbuddy_record,
     "claude-code": parse_claude_code_record,
     "codex": parse_codex_record,
+    "qoder": parse_qoder_record,
 }
 _FALLBACK_EVENTS = frozenset({"Stop", "stop", "SubagentStop", "StopFailure"})
 _TEXT_BLOCKS = frozenset({"text"})
@@ -149,6 +152,9 @@ def capture_hook(source_id: str, payload: object, database: Path) -> bool:
         return False
     if source_id == "pi" and _is_automated_session(first_string(payload.get("cwd"))):
         return False
+    if source_id == "qoder" and payload.get("hook_event_name") in _FALLBACK_EVENTS:
+        if _capture_transcript(source_id, payload, database):
+            return True
     lines = _messages(source_id, payload)
     if lines:
         conversation_id = _conversation(payload)

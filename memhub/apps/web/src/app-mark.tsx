@@ -2,6 +2,7 @@ const APP_ICON_BY_ID: ReadonlyArray<readonly [string, string]> = [
   ["deepseek-harness", "deepseek"],
   ["claude-code", "claude"],
   ["qwen-code", "qwen"],
+  ["qoder", "qoder"],
   ["workbuddy", "workbuddy"],
   ["codebuddy", "codebuddy"],
   ["openclaw", "openclaw"],

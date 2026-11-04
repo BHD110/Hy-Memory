@@ -30,7 +30,7 @@ interface TrayOptions {
 }
 
 export function installBackgroundTray(options: TrayOptions): () => void {
-  if (options.platform !== "darwin") return () => {};
+  if (options.platform !== "darwin" && options.platform !== "win32") return () => {};
   const { app } = options;
   const iconPath = app.isPackaged
     ? path.join(options.resourcesPath, "desktop", "icon.png")
@@ -38,6 +38,8 @@ export function installBackgroundTray(options: TrayOptions): () => void {
   const image = options.createImage(iconPath);
   if (image.isEmpty()) throw new Error("desktop_tray_icon_unavailable");
   const tray = options.createTray(image.resize({ width: 18, height: 18 }));
+  if (options.platform === "win32") tray.on("double-click", options.open);
+  const loginAvailable = app.isPackaged || options.platform === "win32";
   let disposed = false;
   const productName = options.productName ?? "MemHub";
   tray.setToolTip(productName);
@@ -49,11 +51,11 @@ export function installBackgroundTray(options: TrayOptions): () => void {
       translate(locale, key, { product: productName });
     const current = ++generation;
     let checked = false;
-    let enabled = app.isPackaged && options.allowLoginStartup !== false;
+    let enabled = loginAvailable && options.allowLoginStartup !== false;
     let label = t("nativeLogin");
     if (options.allowLoginStartup === false) {
       label += t("nativeTrialUnavailable");
-    } else if (app.isPackaged) {
+    } else if (loginAvailable) {
       try {
         const state = await options.readLoginPreference();
         if (disposed || current !== generation) return;
@@ -76,7 +78,7 @@ export function installBackgroundTray(options: TrayOptions): () => void {
           checked,
           enabled,
           click: (item) => {
-            if (disposed || !app.isPackaged || !enabled) return;
+            if (disposed || !loginAvailable || !enabled) return;
             void options
               .setLoginPreference(item.checked)
               .catch(() =>

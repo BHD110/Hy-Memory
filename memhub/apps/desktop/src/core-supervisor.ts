@@ -146,6 +146,13 @@ export function resolveCoreLaunch(options: {
   }
 
   const repositoryRoot = path.resolve(options.appPath, "../..");
+  if (options.platform === "win32") {
+    return {
+      command: path.join(repositoryRoot, "apps", "core", ".venv", "Scripts", "python.exe"),
+      args: ["-m", "one_memory.cli"],
+      cwd: repositoryRoot,
+    };
+  }
   return {
     command: "uv",
     args: [

@@ -29,6 +29,10 @@ import type {
   SetRecallPermissionInput,
 } from "./host-permissions";
 
+it("maps Qoder CN source to its recall host", () => {
+  expect(connectionHostId("qoder")).toBe("qoder");
+});
+
 const roots: string[] = [];
 const servers: Server[] = [];
 const preload = vi.hoisted(() => ({ expose: vi.fn(), invoke: vi.fn() }));
